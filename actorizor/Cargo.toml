@@ -2,6 +2,9 @@
 name = "actorizor"
 version = "0.1.0"
 edition = "2024"
+description = "Simple macro based actor framework for Tokio-based apps"
+repository = "https://github.com/SigilVault/actorizor"
+license = "Apache-2.0"
 
 [lib]
 proc-macro = true

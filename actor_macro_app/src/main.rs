@@ -1,7 +1,7 @@
 // #![feature(trace_macros)]
 // trace_macros!(true);
 
-use actor_macro_lib::actorize;
+use actorizor::actorize;
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
