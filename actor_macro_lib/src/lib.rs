@@ -4,7 +4,7 @@
 extern crate proc_macro;
 
 mod actorizor;
-mod pretty;
+// mod pretty;
 
 #[proc_macro_attribute]
 pub fn actorize(

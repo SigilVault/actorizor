@@ -39,9 +39,9 @@ async fn main() {
     // let foo: Foo = Default::default();
     // println!("Foo is {foo:?}");
 
-    // let foo_handle = BarHandle::constr_1(124);
-    // // let r = foo_handle.do_thing(123, "Str".to_owned()).await.unwrap();
-    // // println!("r: {r}");
+    let foo_handle = BarHandle::new();
+    let r = foo_handle.do_thing(123, "Str".to_owned()).await.unwrap();
+    println!("r: {r}");
 
     // // BarHandleError::from(value)
 

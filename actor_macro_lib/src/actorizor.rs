@@ -449,15 +449,11 @@ pub fn actorize(
         #run_actor_fn_stream
     };
 
-    // TODO: remove
-    // eprintln!("{}", implementation);
-    eprintln!("\n-----\n");
-    eprintln!(
-        "{}",
-        crate::pretty::pretty_print(&implementation)
-            .unwrap_or("Error during pretty print".to_owned())
-    );
-    eprintln!("\n-----\n");
+    // eprintln!(
+    //     "{}",
+    //     crate::pretty::pretty_print(&implementation)
+    //         .unwrap_or("Error during pretty print".to_owned())
+    // );
 
     implementation.into()
 }
