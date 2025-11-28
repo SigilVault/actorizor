@@ -4,7 +4,9 @@
 extern crate proc_macro;
 
 mod actorizor;
-// mod pretty;
+
+#[cfg(feature = "diagout")]
+mod pretty;
 
 #[proc_macro_attribute]
 pub fn actorize(

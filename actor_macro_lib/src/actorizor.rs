@@ -429,11 +429,25 @@ fn extract_functions_raw(item: &ItemImpl, only_methods: bool) -> impl Iterator<I
 // ----
 
 pub fn actorize(
-    _attr: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let ast = syn::parse::<ItemImpl>(item).expect("unable to get ast");
-    let root = Root::from(ast);
+    let mut root = Root::from(ast);
+
+    // This is awful but I dont fancy writing custom parser just for a single argument right now.
+    let mut qdepth = STD_QUEUE_DEPTH;
+    if attr.clone().into_iter().count() == 1 {
+        for tok in attr {
+            match tok {
+                proc_macro::TokenTree::Literal(literal) => {
+                    qdepth = format!("{}", literal).parse().unwrap();
+                }
+                _ => continue,
+            }
+        }
+    }
+    root.qdepth = qdepth;
 
     let error_enum_stream = root.error_enum_stream();
     let impl_token_stream = root.impl_token_stream();
@@ -449,11 +463,12 @@ pub fn actorize(
         #run_actor_fn_stream
     };
 
-    // eprintln!(
-    //     "{}",
-    //     crate::pretty::pretty_print(&implementation)
-    //         .unwrap_or("Error during pretty print".to_owned())
-    // );
+    #[cfg(feature = "diagout")]
+    eprintln!(
+        "{}",
+        crate::pretty::pretty_print(&implementation)
+            .unwrap_or("Error during pretty print".to_owned())
+    );
 
     implementation.into()
 }

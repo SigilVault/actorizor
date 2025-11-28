@@ -1,4 +1,3 @@
-use anyhow::{Context, Error};
 use quote::ToTokens;
 use std::{
     io::Write,
@@ -7,7 +6,7 @@ use std::{
 
 /// Use `rustfmt` to pretty-print the tokens.
 #[allow(dead_code)]
-pub fn pretty_print(tokens: impl ToTokens) -> Result<String, Error> {
+pub fn pretty_print(tokens: impl ToTokens) -> Result<String, Box<dyn std::error::Error>> {
     let tokens = tokens.into_token_stream().to_string();
 
     let mut child = Command::new("rustfmt")
@@ -16,7 +15,7 @@ pub fn pretty_print(tokens: impl ToTokens) -> Result<String, Error> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("Unable to start `rustfmt`. Is it installed?")?;
+        .expect("Unable to start `rustfmt`. Is it installed?");
 
     let mut stdin = child.stdin.take().unwrap();
     write!(stdin, "{tokens}")?;
@@ -38,8 +37,8 @@ pub fn pretty_print(tokens: impl ToTokens) -> Result<String, Error> {
         eprintln!("{stderr}");
         let code = status.code();
         match code {
-            Some(code) => anyhow::bail!("The `rustfmt` command failed with return code {code}"),
-            None => anyhow::bail!("The `rustfmt` command failed"),
+            Some(code) => panic!("The `rustfmt` command failed with return code {code}"),
+            None => panic!("The `rustfmt` command failed"),
         }
     }
 

@@ -9,7 +9,7 @@ struct Bar {
     number: u64,
 }
 
-#[actorize]
+#[actorize(20)]
 #[allow(dead_code)]
 impl Bar {
     pub fn do_thing(&self, something: u64, otherwise: String) -> u64 {
@@ -36,30 +36,7 @@ impl Bar {
 
 #[tokio::main]
 async fn main() {
-    // let foo: Foo = Default::default();
-    // println!("Foo is {foo:?}");
-
     let foo_handle = BarHandle::new();
     let r = foo_handle.do_thing(123, "Str".to_owned()).await.unwrap();
     println!("r: {r}");
-
-    // // BarHandleError::from(value)
-
-    // let (s, r) = tokio::sync::oneshot::channel();
-    // let x = s.send(());
-    // let x = r.await;
-    // let e = x.err();
-
-    // eprintln!("err: {:?}", e);
-
-    // let err = BarHandleError::from(e.unwrap());
-
-    // foo_handle.clone().other().await.unwrap();
-
-    // match foo_handle.do_thing().await {
-    //     Ok(_res) => println!("Thing done"),
-    //     Err(_err) => println!("Thing failed"),
-    // };
-
-    // foo_handle.other().await.unwrap();
 }
