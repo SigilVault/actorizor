@@ -157,11 +157,11 @@ impl ActorFunc {
 
         let (init_call, sig) = match self.is_async {
             true => (
-                quote!(let mut actor = #actor_name::#fn_name(#(#constr_args),*).await),
+                quote!(let mut actor = #actor_name::#fn_name(#(#constr_args)*).await),
                 quote!(pub async fn #fn_name(#(#fn_params)*)),
             ),
             false => (
-                quote!(let mut actor = #actor_name::#fn_name(#(#constr_args),*)),
+                quote!(let mut actor = #actor_name::#fn_name(#(#constr_args)*)),
                 quote!(pub fn #fn_name(#(#fn_params)*)),
             ),
         };

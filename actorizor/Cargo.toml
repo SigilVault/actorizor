@@ -1,6 +1,6 @@
 [package]
 name = "actorizor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Simple macro based actor framework for Tokio-based apps"
 repository = "https://github.com/SigilVault/actorizor"

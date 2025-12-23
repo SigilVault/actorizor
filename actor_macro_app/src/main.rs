@@ -32,6 +32,29 @@ impl Bar {
     pub fn new() -> Self {
         Self { number: 123 }
     }
+
+    pub fn new_2(a: u64, b: u64) -> Self {
+        Self { number: a * b }
+    }
+
+    pub async fn new_3(a: u64, b: u64) -> Self {
+        Self { number: a * b }
+    }
+
+    pub fn new_4(a: u64) -> Self {
+        Self { number: a }
+    }
+
+    pub fn do_a() -> u64 {
+        42
+    }
+
+    pub fn do_b(a: u64) -> u64 {
+        a
+    }
+    pub fn do_c(a: u64, b: u64) -> u64 {
+        a + b
+    }
 }
 
 #[tokio::main]
