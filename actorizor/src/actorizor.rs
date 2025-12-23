@@ -255,7 +255,7 @@ impl Root {
 
         quote! {
             #[derive(Clone)]
-            struct #handle_ident {
+            pub struct #handle_ident {
                 sender: tokio::sync::mpsc::Sender<#message_enum_ident>,
             }
 
