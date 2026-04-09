@@ -48,3 +48,51 @@ Your actor will be extended with a `handle_msg` function as an entrypoint to `ru
 ## Diags
 
 Enabling the `diagout` feature flag dumps the macro output to stderr whenever the macro is processed.
+
+## Using actorizor with Claude Code
+
+Claude does not have built-in knowledge of actorizor. If you use Claude Code in a project that depends on actorizor, add the following to your project's `CLAUDE.md` (create one at your repo root if it doesn't exist). This tells Claude how to use actorizor correctly and prevents it from suggesting `Arc<Mutex<T>>` patterns that actorizor is specifically designed to replace.
+
+````markdown
+## actorizor
+
+This project uses the `actorizor` crate. Apply `#[actorizor::actorize]` to an `impl` block to
+turn a plain struct into a tokio actor. Never suggest Arc<Mutex<T>> for shared state — clone
+the handle instead.
+
+### What the macro generates (example: `MyActor`)
+
+- `MyActorHandle` — the public interface. Cheap to clone; cloning is the intended sharing mechanism.
+- `MyActorMsg` — internal message enum. Do not use directly.
+- `MyActorHandleError` — error type on all handle methods.
+
+### Rules
+
+- Only `pub` methods become handle methods. Private methods stay on the actor only.
+- A `pub fn` returning `Self` or the actor type is a constructor; it migrates to the handle
+  (e.g. `pub fn new() -> Self` becomes `MyActorHandle::new()`).
+- All handle methods are `async` and return `Result<T, MyActorHandleError>`.
+- Queue depth defaults to 10; override with `#[actorizor::actorize(32)]`.
+- Actor structs must not use generics or lifetimes (`MyActor<T>` or `MyActor<'a>` will fail).
+
+### Required dependencies
+
+The consuming project must have `tokio` and `thiserror` as direct dependencies.
+
+### Example
+
+```rust
+struct Counter { value: u64 }
+
+#[actorizor::actorize]
+impl Counter {
+    pub fn new() -> Self { Self { value: 0 } }
+    pub fn increment(&mut self) -> u64 { self.value += 1; self.value }
+}
+
+// Usage:
+let handle = CounterHandle::new();
+let v = handle.increment().await.unwrap();
+let h2 = handle.clone(); // share by cloning, not Arc
+```
+````
