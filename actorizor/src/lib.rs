@@ -40,8 +40,9 @@ mod pretty;
 ///
 /// - Only `pub` methods appear on the handle. Private methods stay on the actor only.
 /// - A `pub fn` returning `Self` or the actor type is treated as a constructor and becomes
-///   a (sync or async, matching the original) associated function on the handle.
-/// - All handle methods are `async` and return `Result<T, MyStructHandleError>`.
+///   a (sync or async, matching the original) associated function on the handle that returns
+///   the handle type directly — not `Result`.
+/// - All non-constructor handle methods are `async` and return `Result<T, MyStructHandleError>`.
 /// - Actor structs must not have generic parameters or lifetimes (`MyStruct<T>` will fail).
 ///
 /// # Queue depth
