@@ -1,0 +1,30 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep '^version' actorizor/Cargo.toml | head -1 | awk -F'"' '{print $2}')
+          if [ "$TAG" != "$CARGO_VERSION" ]; then
+            echo "Error: release tag '$TAG' does not match actorizor/Cargo.toml version '$CARGO_VERSION'"
+            exit 1
+          fi
+          echo "Tag and Cargo.toml version match: $TAG"
+
+      - name: Publish to crates.io
+        run: cargo publish -p actorizor
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
