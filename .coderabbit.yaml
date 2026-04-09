@@ -1,0 +1,34 @@
+language: "en-US"
+tone_instructions: "Be concise and direct. Focus on correctness and Rust idioms."
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: ["main"]
+
+  path_instructions:
+    - path: "actorizor/src/**/*.rs"
+      instructions: |
+        This is a Rust proc-macro crate. Pay close attention to:
+        - Correct use of `syn`, `quote`, and `proc-macro2` APIs
+        - Proper span handling to produce useful compiler errors
+        - Generated code correctness — check that the expanded output compiles and behaves as documented in README.md
+        - Token stream hygiene (avoid variable name collisions in generated code)
+    - path: "actor_macro_app/src/**/*.rs"
+      instructions: |
+        This is the example/test app for the actorizor macro. Verify that usage matches the documented API in actorizor/README.md.
+
+  path_filters:
+    - "!target/**"
+    - "!**/*.lock"
+
+chat:
+  auto_reply: true
