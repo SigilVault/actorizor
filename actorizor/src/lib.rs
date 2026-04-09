@@ -48,7 +48,7 @@ mod pretty;
 ///
 /// The default channel depth is 10. Override with a literal:
 ///
-/// ```rust
+/// ```ignore
 /// #[actorizor::actorize(32)]
 /// impl MyStruct { ... }
 /// ```
