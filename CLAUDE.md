@@ -28,7 +28,34 @@ Constructors become sync or async `fn` on the handle (matching the original), ca
 
 ## Queue depth
 
-Defaults to `STD_QUEUE_DEPTH = 10`. Override with `#[actorizor::actorize(32)]` — the attribute accepts a single integer literal.
+Defaults to `STD_QUEUE_DEPTH = 10`. Override with `#[actorizor::actorize(32)]` (positional) or `#[actorizor::actorize(qdepth = 32)]` (named).
+
+## Attribute parsing
+
+Args go through `AttrArgs` (custom `Parse` impl, top of `actorizor.rs`). Accepts:
+
+- a bare integer literal (positional `qdepth`)
+- `qdepth = N`
+- `spawn_with = path::to::fn`
+- any comma-separated combination of the above
+
+Reject unknown keys with a `syn::Error` at the key's span so users see the bad arg highlighted.
+
+## Bring-your-own spawn (`spawn_with`)
+
+`spawn_with = path::to::fn` overrides what the generated `launch_actor` does with the actor's future. The contract on the function:
+
+```rust
+fn(name: &'static str, fut: impl Future<Output = ()> + Send + 'static)
+```
+
+It must drive `fut` on a tokio runtime and return promptly (no `.await` of the future itself — that would defeat the point of `launch_actor` being sync). It's the caller's place to hold a `JoinHandle`, watch for panics, restart, or emit metrics.
+
+When `spawn_with` is omitted, the macro emits a per-module shim `__actorizor_default_spawn` that ignores `name` and delegates to `tokio::task::spawn` — same shape, zero runtime cost (inlined). Generated code is uniform: always `<callable>(stringify!(Actor), run_actor(actor, receiver))`.
+
+## Error logging
+
+The generated `run_actor` loop calls `::tracing::warn!(actor = "ActorName", error = ?e, ...)` when `handle_msg` returns Err. Users must therefore have `tracing` as a direct dependency. (Replaced `eprintln!` from 0.1.x — that's the breaking change in 0.2.0.)
 
 ## diagout feature
 

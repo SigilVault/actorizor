@@ -47,16 +47,51 @@ mod pretty;
 ///
 /// # Queue depth
 ///
-/// The default channel depth is 10. Override with a literal:
+/// The default channel depth is 10. Override with a positional literal or
+/// the named form:
 ///
 /// ```ignore
 /// #[actorizor::actorize(32)]
+/// #[actorizor::actorize(qdepth = 32)]
 /// impl MyStruct { ... }
 /// ```
 ///
+/// # Bring-your-own spawn
+///
+/// By default the generated code calls `tokio::task::spawn` and drops the
+/// `JoinHandle` (fire-and-forget). Supply your own function with
+/// `spawn_with = path::to::fn` to take ownership of the spawn — e.g. to
+/// track the JoinHandle, observe panics, restart on exit, or emit metrics.
+///
+/// ```ignore
+/// fn my_supervisor<F>(name: &'static str, fut: F)
+/// where
+///     F: std::future::Future<Output = ()> + Send + 'static,
+/// {
+///     tracing::info!(actor = name, "spawning");
+///     let _ = tokio::task::spawn(fut);
+/// }
+///
+/// #[actorizor::actorize(spawn_with = crate::my_supervisor)]
+/// impl MyStruct { ... }
+///
+/// // Composes with qdepth:
+/// #[actorizor::actorize(64, spawn_with = crate::my_supervisor)]
+/// #[actorizor::actorize(qdepth = 64, spawn_with = crate::my_supervisor)]
+/// ```
+///
+/// The function's contract:
+/// - Drive `fut` on a tokio runtime (it uses `tokio::sync::mpsc` and the
+///   actor's methods may be async).
+/// - Don't block — `launch_actor` is sync and must return promptly.
+/// - The `name` argument is `stringify!(ActorIdent)` — use it for logs and
+///   metrics labels.
+///
 /// # Dependencies
 ///
-/// Your project must include `tokio` and `thiserror` as direct dependencies.
+/// Your project must include `tokio`, `thiserror`, and `tracing` as direct
+/// dependencies. (Per-message error handling in the generated `run_actor`
+/// loop uses `tracing::warn!`.)
 #[proc_macro_attribute]
 pub fn actorize(
     attr: proc_macro::TokenStream,

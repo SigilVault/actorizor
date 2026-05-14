@@ -1,9 +1,83 @@
 use convert_case::{Case, Casing as _};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use syn::{Arm, FnArg, Ident, ImplItemFn, ItemImpl, Pat, ReturnType, Type, Variant, parse_quote};
+use syn::parse::{Parse, ParseStream};
+use syn::{
+    Arm, FnArg, Ident, ImplItemFn, ItemImpl, LitInt, Pat, Path, ReturnType, Token, Type, Variant,
+    parse_quote,
+};
 
 const STD_QUEUE_DEPTH: usize = 10;
+
+// ---------------------------------------------------------------------------
+// Attribute parsing
+// ---------------------------------------------------------------------------
+//
+// Forms accepted (all equivalent for `qdepth` if the integer is positional):
+//
+//   #[actorize]
+//   #[actorize(32)]
+//   #[actorize(qdepth = 32)]
+//   #[actorize(spawn_with = my::supervisor::spawn)]
+//   #[actorize(32, spawn_with = my::supervisor::spawn)]
+//
+// `spawn_with` accepts a path to a function (or fn-like item) with the
+// signature
+//
+//   fn(name: &'static str, fut: impl Future<Output = ()> + Send + 'static)
+//
+// Whatever the function does with the future is the caller's business — the
+// minimum contract is to drive it on a tokio runtime. When omitted, a
+// per-module default shim (`__actorizor_default_spawn`) is emitted that
+// delegates to `tokio::task::spawn` and discards the name argument.
+
+struct AttrArgs {
+    qdepth: Option<usize>,
+    spawn_with: Option<Path>,
+}
+
+impl Parse for AttrArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut qdepth = None;
+        let mut spawn_with = None;
+
+        while !input.is_empty() {
+            if input.peek(LitInt) {
+                let lit: LitInt = input.parse()?;
+                qdepth = Some(lit.base10_parse()?);
+            } else if input.peek(Ident) {
+                let ident: Ident = input.parse()?;
+                let _: Token![=] = input.parse()?;
+                match ident.to_string().as_str() {
+                    "qdepth" => {
+                        let lit: LitInt = input.parse()?;
+                        qdepth = Some(lit.base10_parse()?);
+                    }
+                    "spawn_with" => {
+                        let path: Path = input.parse()?;
+                        spawn_with = Some(path);
+                    }
+                    other => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!("unknown actorize argument `{other}` (expected `qdepth` or `spawn_with`)"),
+                        ));
+                    }
+                }
+            } else {
+                return Err(input.error(
+                    "expected an integer literal (qdepth), `qdepth = N`, or `spawn_with = path::to::fn`",
+                ));
+            }
+
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        Ok(Self { qdepth, spawn_with })
+    }
+}
 
 #[derive(Clone)]
 struct FuncInput {
@@ -220,6 +294,11 @@ struct Root {
     actor_constructors: Vec<ActorFunc>,
 
     qdepth: usize,
+    /// Optional user-provided spawn function. When `None`, generated code
+    /// calls the per-module `__actorizor_default_spawn` shim that delegates
+    /// to `tokio::task::spawn`. When `Some`, generated code calls the user
+    /// path with `(name, future)`.
+    spawn_with: Option<Path>,
 }
 
 impl Root {
@@ -253,16 +332,26 @@ impl Root {
         let message_enum_ident = &self.message_enum_ident;
         let qdepth = &self.qdepth;
 
+        // The spawn invocation always takes the shape
+        // `<path>(stringify!(ActorName), run_actor(actor, receiver))`. When
+        // the user passes `spawn_with`, `<path>` is that path. Otherwise it's
+        // the per-module shim emitted by `default_spawn_fn_stream`. Both have
+        // the same signature, so the call site is uniform.
+        let spawn_path: TokenStream = match &self.spawn_with {
+            Some(p) => quote!(#p),
+            None => quote!(__actorizor_default_spawn),
+        };
+
         quote! {
             #[derive(Clone)]
             pub struct #handle_ident {
-                sender: tokio::sync::mpsc::Sender<#message_enum_ident>,
+                sender: ::tokio::sync::mpsc::Sender<#message_enum_ident>,
             }
 
             impl #handle_ident {
                 fn launch_actor(mut actor: #actor_ident) -> Self {
-                    let (sender, receiver) = tokio::sync::mpsc::channel(#qdepth);
-                    tokio::task::spawn(run_actor(actor, receiver));
+                    let (sender, receiver) = ::tokio::sync::mpsc::channel(#qdepth);
+                    #spawn_path(stringify!(#actor_ident), run_actor(actor, receiver));
 
                     Self { sender }
                 }
@@ -294,18 +383,43 @@ impl Root {
         let message_enum_ident = &self.message_enum_ident;
         let actor_ident = &self.actor_ident;
 
+        // Emit the default spawn shim only when the caller didn't provide a
+        // custom one. Multiple `#[actorize]` blocks in the same module would
+        // otherwise produce duplicate `__actorizor_default_spawn` definitions
+        // — the same constraint already applies to `run_actor`, so it doesn't
+        // change the existing "one actor per module" rule.
+        let default_spawn = if self.spawn_with.is_none() {
+            quote! {
+                #[doc(hidden)]
+                fn __actorizor_default_spawn<F>(_actor_name: &'static str, fut: F)
+                where
+                    F: ::core::future::Future<Output = ()> + ::core::marker::Send + 'static,
+                {
+                    ::tokio::task::spawn(fut);
+                }
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             async fn run_actor(
                 mut actor: #actor_ident,
-                mut receiver: tokio::sync::mpsc::Receiver<#message_enum_ident>,
+                mut receiver: ::tokio::sync::mpsc::Receiver<#message_enum_ident>,
             ) {
                 while let Some(msg) = receiver.recv().await {
                     match actor.handle_msg(msg).await {
                         Ok(_) => continue,
-                        Err(e) => eprintln!("error during actor message handling: {e:?}"),
+                        Err(e) => ::tracing::warn!(
+                            actor = stringify!(#actor_ident),
+                            error = ?e,
+                            "actor message handling failed",
+                        ),
                     };
                 }
             }
+
+            #default_spawn
         }
     }
 
@@ -384,6 +498,7 @@ impl From<ItemImpl> for Root {
             actor_constructors,
             handle_error_ident,
             qdepth: STD_QUEUE_DEPTH,
+            spawn_with: None,
         }
     }
 }
@@ -435,19 +550,22 @@ pub fn actorize(
     let ast = syn::parse::<ItemImpl>(item).expect("unable to get ast");
     let mut root = Root::from(ast);
 
-    // This is awful but I dont fancy writing custom parser just for a single argument right now.
-    let mut qdepth = STD_QUEUE_DEPTH;
-    if attr.clone().into_iter().count() == 1 {
-        for tok in attr {
-            match tok {
-                proc_macro::TokenTree::Literal(literal) => {
-                    qdepth = format!("{}", literal).parse().unwrap();
-                }
-                _ => continue,
-            }
+    let attr_ts2: proc_macro2::TokenStream = attr.into();
+    let args: AttrArgs = if attr_ts2.is_empty() {
+        AttrArgs {
+            qdepth: None,
+            spawn_with: None,
         }
+    } else {
+        syn::parse2(attr_ts2).unwrap_or_else(|e| {
+            panic!("#[actorize] attribute parse error: {e}")
+        })
+    };
+
+    if let Some(q) = args.qdepth {
+        root.qdepth = q;
     }
-    root.qdepth = qdepth;
+    root.spawn_with = args.spawn_with;
 
     let error_enum_stream = root.error_enum_stream();
     let impl_token_stream = root.impl_token_stream();
