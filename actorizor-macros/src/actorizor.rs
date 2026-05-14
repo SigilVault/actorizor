@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Arm, FnArg, Ident, ImplItemFn, ItemImpl, LitInt, Pat, Path, ReturnType, Token, Type, Variant,
+    Arm, FnArg, Ident, ImplItemFn, ItemImpl, LitInt, Pat, ReturnType, Token, Type, Variant,
     parse_quote,
 };
 
@@ -13,33 +13,23 @@ const STD_QUEUE_DEPTH: usize = 10;
 // Attribute parsing
 // ---------------------------------------------------------------------------
 //
-// Forms accepted (all equivalent for `qdepth` if the integer is positional):
+// Forms accepted:
 //
 //   #[actorize]
-//   #[actorize(32)]
-//   #[actorize(qdepth = 32)]
-//   #[actorize(spawn_with = my::supervisor::spawn)]
-//   #[actorize(32, spawn_with = my::supervisor::spawn)]
+//   #[actorize(32)]           // positional qdepth
+//   #[actorize(qdepth = 32)]  // named qdepth
 //
-// `spawn_with` accepts a path to a function (or fn-like item) with the
-// signature
-//
-//   fn(name: &'static str, fut: impl Future<Output = ()> + Send + 'static)
-//
-// Whatever the function does with the future is the caller's business — the
-// minimum contract is to drive it on a tokio runtime. When omitted, a
-// per-module default shim (`__actorizor_default_spawn`) is emitted that
-// delegates to `tokio::task::spawn` and discards the name argument.
+// Supervision is provided via the generated `Handle::launch_with(actor, &S)`
+// method, not via the attribute. See the parent crate's `Supervisor` trait
+// + `TokioSpawn` / `TrackingSupervisor` types.
 
 struct AttrArgs {
     qdepth: Option<usize>,
-    spawn_with: Option<Path>,
 }
 
 impl Parse for AttrArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut qdepth = None;
-        let mut spawn_with = None;
 
         while !input.is_empty() {
             if input.peek(LitInt) {
@@ -53,20 +43,18 @@ impl Parse for AttrArgs {
                         let lit: LitInt = input.parse()?;
                         qdepth = Some(lit.base10_parse()?);
                     }
-                    "spawn_with" => {
-                        let path: Path = input.parse()?;
-                        spawn_with = Some(path);
-                    }
                     other => {
                         return Err(syn::Error::new(
                             ident.span(),
-                            format!("unknown actorize argument `{other}` (expected `qdepth` or `spawn_with`)"),
+                            format!(
+                                "unknown actorize argument `{other}` (expected `qdepth`)"
+                            ),
                         ));
                     }
                 }
             } else {
                 return Err(input.error(
-                    "expected an integer literal (qdepth), `qdepth = N`, or `spawn_with = path::to::fn`",
+                    "expected an integer literal (qdepth) or `qdepth = N`",
                 ));
             }
 
@@ -75,7 +63,7 @@ impl Parse for AttrArgs {
             }
         }
 
-        Ok(Self { qdepth, spawn_with })
+        Ok(Self { qdepth })
     }
 }
 
@@ -243,7 +231,7 @@ impl ActorFunc {
         quote! {
             #sig -> Self {
                 #init_call;
-                Self::launch_actor(actor)
+                Self::launch_unsupervised(actor)
             }
         }
         .to_token_stream()
@@ -294,11 +282,6 @@ struct Root {
     actor_constructors: Vec<ActorFunc>,
 
     qdepth: usize,
-    /// Optional user-provided spawn function. When `None`, generated code
-    /// calls the per-module `__actorizor_default_spawn` shim that delegates
-    /// to `tokio::task::spawn`. When `Some`, generated code calls the user
-    /// path with `(name, future)`.
-    spawn_with: Option<Path>,
 }
 
 impl Root {
@@ -332,28 +315,73 @@ impl Root {
         let message_enum_ident = &self.message_enum_ident;
         let qdepth = &self.qdepth;
 
-        // The spawn invocation always takes the shape
-        // `<path>(stringify!(ActorName), run_actor(actor, receiver))`. When
-        // the user passes `spawn_with`, `<path>` is that path. Otherwise it's
-        // the per-module shim emitted by `default_spawn_fn_stream`. Both have
-        // the same signature, so the call site is uniform.
-        let spawn_path: TokenStream = match &self.spawn_with {
-            Some(p) => quote!(#p),
-            None => quote!(__actorizor_default_spawn),
-        };
-
         quote! {
             #[derive(Clone)]
             pub struct #handle_ident {
                 sender: ::tokio::sync::mpsc::Sender<#message_enum_ident>,
+                /// AbortHandle for the actor task. Cloned across every
+                /// Handle clone; `abort()` fires through this. The Handle
+                /// uses it for `is_alive` / `is_finished` queries too.
+                abort: ::tokio::task::AbortHandle,
+                /// Shared cooperative-shutdown signal. `shutdown()` calls
+                /// `notify_waiters()`; `run_actor`'s biased `select!` exits
+                /// on `notified()`.
+                shutdown: ::std::sync::Arc<::tokio::sync::Notify>,
             }
 
             impl #handle_ident {
-                fn launch_actor(mut actor: #actor_ident) -> Self {
+                /// Construct the channel + shutdown signal + actor task,
+                /// using the supplied supervisor to schedule the task.
+                /// Returns the Handle wrapping the sender/abort/shutdown.
+                pub fn launch_with<__ActorizorSup>(
+                    actor: #actor_ident,
+                    sup: &__ActorizorSup,
+                ) -> Self
+                where
+                    __ActorizorSup: ::actorizor::Supervisor,
+                {
                     let (sender, receiver) = ::tokio::sync::mpsc::channel(#qdepth);
-                    #spawn_path(stringify!(#actor_ident), run_actor(actor, receiver));
+                    let shutdown = ::std::sync::Arc::new(::tokio::sync::Notify::new());
+                    let abort = sup.spawn(
+                        stringify!(#actor_ident),
+                        run_actor(actor, receiver, shutdown.clone()),
+                    );
+                    Self { sender, abort, shutdown }
+                }
 
-                    Self { sender }
+                /// Unsupervised launch: schedules the actor task via
+                /// `tokio::task::spawn` and discards the JoinHandle. Used
+                /// internally by the generated constructors below.
+                fn launch_unsupervised(actor: #actor_ident) -> Self {
+                    Self::launch_with(actor, &::actorizor::TokioSpawn)
+                }
+
+                /// Forcefully abort the actor task. The current message
+                /// (if any) is dropped mid-poll; subsequent handle method
+                /// calls will fail with `RecvFromActorError` once the
+                /// oneshot Sender held inside the killed Msg is dropped.
+                pub fn abort(&self) {
+                    self.abort.abort();
+                }
+
+                /// Cooperatively signal the actor to stop. Wakes the
+                /// biased select! in `run_actor`; the loop exits without
+                /// dropping the current Sender clones, so this handle's
+                /// methods will still appear to send successfully but
+                /// recv() will fail once the actor has exited.
+                pub fn shutdown(&self) {
+                    self.shutdown.notify_waiters();
+                }
+
+                /// Returns `true` if the actor task is still running.
+                pub fn is_alive(&self) -> bool {
+                    !self.abort.is_finished()
+                }
+
+                /// Returns `true` if the actor task has exited (clean,
+                /// panic, or abort).
+                pub fn is_finished(&self) -> bool {
+                    self.abort.is_finished()
                 }
 
                 #(#constructor_funcs)*
@@ -383,43 +411,30 @@ impl Root {
         let message_enum_ident = &self.message_enum_ident;
         let actor_ident = &self.actor_ident;
 
-        // Emit the default spawn shim only when the caller didn't provide a
-        // custom one. Multiple `#[actorize]` blocks in the same module would
-        // otherwise produce duplicate `__actorizor_default_spawn` definitions
-        // — the same constraint already applies to `run_actor`, so it doesn't
-        // change the existing "one actor per module" rule.
-        let default_spawn = if self.spawn_with.is_none() {
-            quote! {
-                #[doc(hidden)]
-                fn __actorizor_default_spawn<F>(_actor_name: &'static str, fut: F)
-                where
-                    F: ::core::future::Future<Output = ()> + ::core::marker::Send + 'static,
-                {
-                    ::tokio::task::spawn(fut);
-                }
-            }
-        } else {
-            quote! {}
-        };
-
         quote! {
             async fn run_actor(
                 mut actor: #actor_ident,
                 mut receiver: ::tokio::sync::mpsc::Receiver<#message_enum_ident>,
+                shutdown: ::std::sync::Arc<::tokio::sync::Notify>,
             ) {
-                while let Some(msg) = receiver.recv().await {
-                    match actor.handle_msg(msg).await {
-                        Ok(_) => continue,
-                        Err(e) => ::tracing::warn!(
-                            actor = stringify!(#actor_ident),
-                            error = ?e,
-                            "actor message handling failed",
-                        ),
-                    };
+                loop {
+                    ::tokio::select! {
+                        biased;
+                        _ = shutdown.notified() => break,
+                        maybe_msg = receiver.recv() => match maybe_msg {
+                            None => break,
+                            Some(msg) => match actor.handle_msg(msg).await {
+                                Ok(_) => continue,
+                                Err(e) => ::tracing::warn!(
+                                    actor = stringify!(#actor_ident),
+                                    error = ?e,
+                                    "actor message handling failed",
+                                ),
+                            },
+                        },
+                    }
                 }
             }
-
-            #default_spawn
         }
     }
 
@@ -498,7 +513,6 @@ impl From<ItemImpl> for Root {
             actor_constructors,
             handle_error_ident,
             qdepth: STD_QUEUE_DEPTH,
-            spawn_with: None,
         }
     }
 }
@@ -552,10 +566,7 @@ pub fn actorize(
 
     let attr_ts2: proc_macro2::TokenStream = attr.into();
     let args: AttrArgs = if attr_ts2.is_empty() {
-        AttrArgs {
-            qdepth: None,
-            spawn_with: None,
-        }
+        AttrArgs { qdepth: None }
     } else {
         syn::parse2(attr_ts2).unwrap_or_else(|e| {
             panic!("#[actorize] attribute parse error: {e}")
@@ -565,7 +576,6 @@ pub fn actorize(
     if let Some(q) = args.qdepth {
         root.qdepth = q;
     }
-    root.spawn_with = args.spawn_with;
 
     let error_enum_stream = root.error_enum_stream();
     let impl_token_stream = root.impl_token_stream();

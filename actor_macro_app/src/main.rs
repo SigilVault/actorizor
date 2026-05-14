@@ -87,194 +87,338 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// spawn_with — bring-your-own spawn function (0.2.0+)
+// launch_with + TokioSpawn coverage
 // ---------------------------------------------------------------------------
-//
-// Each test lives in its own submodule because the macro generates a
-// module-scoped `run_actor` (and now `__actorizor_default_spawn`) — see
-// `actorizor/src/actorizor.rs`. Putting multiple actors in one module
-// triggers duplicate-symbol errors. Predates this PR; documented as a known
-// limitation in CLAUDE.md.
 
 #[cfg(test)]
-mod spawn_with_shared {
+mod launch_with_tokio_spawn {
+    use actorizor::{TokioSpawn, actorize};
+
+    #[derive(Debug, Default)]
+    struct Counter {
+        value: u64,
+    }
+
+    #[actorize]
+    impl Counter {
+        pub fn new() -> Self {
+            Self { value: 0 }
+        }
+
+        pub fn bump(&mut self) -> u64 {
+            self.value += 1;
+            self.value
+        }
+    }
+
+    #[tokio::test]
+    async fn launches_under_tokio_spawn_supervisor() {
+        let h = CounterHandle::launch_with(Counter::new(), &TokioSpawn);
+        assert_eq!(h.bump().await.unwrap(), 1);
+        assert_eq!(h.bump().await.unwrap(), 2);
+        assert!(h.is_alive());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// launch_with + custom user-supplied Supervisor
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod launch_with_custom_supervisor {
     use std::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tokio::sync::OnceCell;
+    use actorizor::{Supervisor, actorize};
+    use tokio::task::AbortHandle;
 
-    /// Captures which actor names get spawned through this supervisor. Tests
-    /// inspect it to confirm the macro routed through `spawn_with` rather
-    /// than the default shim.
-    pub(crate) static SPAWN_NAMES: OnceCell<Arc<tokio::sync::Mutex<Vec<&'static str>>>> =
-        OnceCell::const_new();
-    pub(crate) static SPAWN_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-    pub(crate) async fn spawn_log() -> Arc<tokio::sync::Mutex<Vec<&'static str>>> {
-        SPAWN_NAMES
-            .get_or_init(|| async { Arc::new(tokio::sync::Mutex::new(Vec::new())) })
-            .await
-            .clone()
+    /// Captures every spawn through it and records the actor name.
+    struct CountingSupervisor {
+        count: Arc<AtomicUsize>,
+        last_name: Arc<tokio::sync::Mutex<Option<&'static str>>>,
     }
 
-    /// Test supervisor: records the actor name, increments the spawn count,
-    /// and otherwise behaves like `tokio::task::spawn`.
-    pub fn test_supervisor<F>(name: &'static str, fut: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        SPAWN_COUNT.fetch_add(1, Ordering::SeqCst);
-        let log = SPAWN_NAMES.get().expect("spawn_log initialised").clone();
-        tokio::spawn(async move {
-            log.lock().await.push(name);
-            fut.await;
-        });
-    }
-}
-
-#[cfg(test)]
-mod spawn_with_basic {
-    use actorizor::actorize;
-    use std::sync::atomic::Ordering;
-
-    use crate::spawn_with_shared::{SPAWN_COUNT, spawn_log};
-
-    #[derive(Debug, Default)]
-    struct CountActor {
-        value: u64,
-    }
-
-    // Path passed to `spawn_with` is resolved by the generated code at call
-    // site — no `use` of the function is needed in this module.
-    #[actorize(spawn_with = crate::spawn_with_shared::test_supervisor)]
-    impl CountActor {
-        pub fn new() -> Self {
-            Self { value: 0 }
-        }
-
-        pub fn bump(&mut self) -> u64 {
-            self.value += 1;
-            self.value
-        }
-    }
-
-    #[tokio::test]
-    async fn spawn_with_routes_through_user_fn_and_carries_actor_name() {
-        let log = spawn_log().await;
-        let before = SPAWN_COUNT.load(Ordering::SeqCst);
-
-        let handle = CountActorHandle::new();
-
-        // Give the spawn wrapper a chance to record the name.
-        tokio::task::yield_now().await;
-
-        assert!(
-            SPAWN_COUNT.load(Ordering::SeqCst) > before,
-            "test_supervisor should have been invoked at least once",
-        );
-        let names = log.lock().await.clone();
-        assert!(
-            names.contains(&"CountActor"),
-            "expected CountActor to appear in {names:?}",
-        );
-
-        // And the actor itself still works — the supervisor really did drive
-        // the future, not just record-and-drop.
-        assert_eq!(handle.bump().await.unwrap(), 1);
-        assert_eq!(handle.bump().await.unwrap(), 2);
-    }
-}
-
-#[cfg(test)]
-mod spawn_with_positional_qdepth {
-    use actorizor::actorize;
-
-    #[derive(Debug, Default)]
-    struct DepthActor {
-        value: u64,
-    }
-
-    #[actorize(64, spawn_with = crate::spawn_with_shared::test_supervisor)]
-    impl DepthActor {
-        pub fn new() -> Self {
-            Self { value: 0 }
-        }
-
-        pub fn bump(&mut self) -> u64 {
-            self.value += 1;
-            self.value
-        }
-    }
-
-    #[tokio::test]
-    async fn spawn_with_composes_with_positional_qdepth() {
-        let _ = crate::spawn_with_shared::spawn_log().await; // init
-        let handle = DepthActorHandle::new();
-        assert_eq!(handle.bump().await.unwrap(), 1);
-    }
-}
-
-#[cfg(test)]
-mod spawn_with_named_qdepth {
-    use actorizor::actorize;
-
-    #[derive(Debug, Default)]
-    struct NamedDepthActor {
-        value: u64,
-    }
-
-    #[actorize(qdepth = 8, spawn_with = crate::spawn_with_shared::test_supervisor)]
-    impl NamedDepthActor {
-        pub fn new() -> Self {
-            Self { value: 0 }
-        }
-
-        pub fn bump(&mut self) -> u64 {
-            self.value += 1;
-            self.value
-        }
-    }
-
-    #[tokio::test]
-    async fn spawn_with_composes_with_named_qdepth() {
-        let _ = crate::spawn_with_shared::spawn_log().await;
-        let handle = NamedDepthActorHandle::new();
-        assert_eq!(handle.bump().await.unwrap(), 1);
-    }
-}
-
-#[cfg(test)]
-mod spawn_with_panic_observation {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use actorizor::actorize;
-
-    // The supervisor wraps the actor's future inside its own `tokio::spawn`
-    // and awaits the JoinHandle, proving the override gets its hands on the
-    // future (not a copy) and can react to panics.
-    pub(crate) static PANIC_OBSERVED: AtomicBool = AtomicBool::new(false);
-
-    pub fn panic_observing_supervisor<F>(_name: &'static str, fut: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        tokio::spawn(async move {
-            let jh = tokio::spawn(fut);
-            if let Err(e) = jh.await {
-                if e.is_panic() {
-                    PANIC_OBSERVED.store(true, Ordering::SeqCst);
-                }
+    impl CountingSupervisor {
+        fn new() -> Self {
+            Self {
+                count: Arc::new(AtomicUsize::new(0)),
+                last_name: Arc::new(tokio::sync::Mutex::new(None)),
             }
-        });
+        }
+    }
+
+    impl Supervisor for CountingSupervisor {
+        fn spawn<F>(&self, name: &'static str, fut: F) -> AbortHandle
+        where
+            F: Future<Output = ()> + Send + 'static,
+        {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            let last_name = self.last_name.clone();
+            let jh = tokio::task::spawn(async move {
+                *last_name.lock().await = Some(name);
+                fut.await;
+            });
+            jh.abort_handle()
+        }
     }
 
     #[derive(Debug, Default)]
-    struct PanicActor;
+    struct Tracked {
+        n: u64,
+    }
 
-    #[actorize(spawn_with = crate::spawn_with_panic_observation::panic_observing_supervisor)]
-    impl PanicActor {
+    #[actorize]
+    impl Tracked {
+        pub fn new() -> Self {
+            Self { n: 0 }
+        }
+
+        pub fn ping(&self) -> u64 {
+            self.n
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_sees_actor_name_and_drives_future() {
+        let sup = CountingSupervisor::new();
+        let before = sup.count.load(Ordering::SeqCst);
+
+        let h = TrackedHandle::launch_with(Tracked::new(), &sup);
+
+        // The actor's handle responds, proving the supervisor really did
+        // drive the future.
+        assert_eq!(h.ping().await.unwrap(), 0);
+
+        assert!(sup.count.load(Ordering::SeqCst) > before);
+        let name = *sup.last_name.lock().await;
+        assert_eq!(name, Some("Tracked"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// abort() forcefully kills the task
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod abort_kills_task {
+    use actorizor::actorize;
+
+    #[derive(Debug, Default)]
+    struct AbortMe {
+        n: u64,
+    }
+
+    #[actorize]
+    impl AbortMe {
+        pub fn new() -> Self {
+            Self { n: 0 }
+        }
+
+        pub fn read(&self) -> u64 {
+            self.n
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_marks_handle_finished_and_blocks_further_calls() {
+        let h = AbortMeHandle::new();
+        assert!(h.is_alive());
+        assert_eq!(h.read().await.unwrap(), 0);
+
+        h.abort();
+
+        // Give tokio a tick to mark the task as finished.
+        for _ in 0..50 {
+            if h.is_finished() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(h.is_finished(), "abort() should mark the task finished");
+        assert!(!h.is_alive());
+
+        // Subsequent handle methods can't get a response. The exact
+        // variant depends on whether send happens before or after the
+        // receiver is dropped; both Send and Recv errors are acceptable.
+        let r = h.read().await;
+        assert!(r.is_err(), "post-abort handle call must fail");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// shutdown() lets the loop exit cooperatively
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod shutdown_exits_cleanly {
+    use actorizor::actorize;
+
+    #[derive(Debug, Default)]
+    struct ShutdownMe {
+        n: u64,
+    }
+
+    #[actorize]
+    impl ShutdownMe {
+        pub fn new() -> Self {
+            Self { n: 0 }
+        }
+
+        pub fn read(&self) -> u64 {
+            self.n
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_terminates_loop_without_dropping_senders() {
+        let h = ShutdownMeHandle::new();
+        let h2 = h.clone();
+        assert!(h.is_alive());
+        assert_eq!(h2.read().await.unwrap(), 0);
+
+        h.shutdown();
+
+        // Wait for the loop to exit. Notify wakeup + a yield should be
+        // enough but allow a few ms for cross-thread coordination.
+        for _ in 0..50 {
+            if h.is_finished() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(h.is_finished(), "shutdown() should make the loop exit");
+
+        // Sender clones still exist (we hold h and h2) but no one is
+        // draining anymore; the next call should fail at recv.
+        let r = h2.read().await;
+        assert!(r.is_err(), "post-shutdown handle call must fail");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TrackingSupervisor (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "tracking"))]
+mod tracking_supervisor {
+    use actorizor::{TrackingSupervisor, actorize};
+
+    #[derive(Debug, Default)]
+    struct Worker {
+        n: u64,
+    }
+
+    #[actorize]
+    impl Worker {
+        pub fn new() -> Self {
+            Self { n: 0 }
+        }
+
+        pub fn ping(&self) -> u64 {
+            self.n
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_abort_by_name_track_lifecycle() {
+        let sup = TrackingSupervisor::new();
+        assert_eq!(sup.alive_count(), 0);
+
+        let h1 = WorkerHandle::launch_with(Worker::new(), &sup);
+        let h2 = WorkerHandle::launch_with(Worker::new(), &sup);
+
+        // Force the handles to communicate so the actor tasks are
+        // definitely registered before we look.
+        assert_eq!(h1.ping().await.unwrap(), 0);
+        assert_eq!(h2.ping().await.unwrap(), 0);
+
+        assert_eq!(sup.alive_count(), 2);
+        assert_eq!(sup.alive_count_by_name("Worker"), 2);
+
+        let snap = sup.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert!(snap.iter().all(|s| s.name == "Worker"));
+        assert!(snap.iter().all(|s| s.alive));
+        let mut ids: Vec<u64> = snap.iter().map(|s| s.id).collect();
+        ids.sort();
+        assert_eq!(ids[1] - ids[0], 1, "ids are monotonic per supervisor");
+
+        // is_alive against a known id holds, against a bogus one fails.
+        assert!(sup.is_alive("Worker", snap[0].id));
+        assert!(!sup.is_alive("Worker", 9999));
+
+        // abort_by_name kills every Worker instance.
+        let killed = sup.abort_by_name("Worker");
+        assert_eq!(killed, 2);
+
+        // Watcher tasks need a tick to observe abort and prune.
+        for _ in 0..50 {
+            if sup.alive_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(sup.alive_count(), 0, "abort + watcher should clean up");
+    }
+
+    #[tokio::test]
+    async fn abort_by_id_targets_one_instance() {
+        let sup = TrackingSupervisor::new();
+        let h1 = WorkerHandle::launch_with(Worker::new(), &sup);
+        let h2 = WorkerHandle::launch_with(Worker::new(), &sup);
+        let _ = h1.ping().await;
+        let _ = h2.ping().await;
+
+        let snap = sup.snapshot();
+        assert_eq!(snap.len(), 2);
+        let target_id = snap[0].id;
+
+        let ok = sup.abort_by_id("Worker", target_id);
+        assert!(ok);
+
+        for _ in 0..50 {
+            if sup.alive_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(sup.alive_count(), 1);
+        assert!(!sup.is_alive("Worker", target_id));
+    }
+
+    #[tokio::test]
+    async fn abort_all_kills_everything() {
+        let sup = TrackingSupervisor::new();
+        let h1 = WorkerHandle::launch_with(Worker::new(), &sup);
+        let h2 = WorkerHandle::launch_with(Worker::new(), &sup);
+        let _ = h1.ping().await;
+        let _ = h2.ping().await;
+        assert_eq!(sup.alive_count(), 2);
+
+        let killed = sup.abort_all();
+        assert_eq!(killed, 2);
+
+        for _ in 0..50 {
+            if sup.alive_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(sup.alive_count(), 0);
+    }
+
+}
+
+#[cfg(all(test, feature = "tracking"))]
+mod tracking_supervisor_panics {
+    use actorizor::{TrackingSupervisor, actorize};
+
+    #[derive(Debug, Default)]
+    struct Panics;
+
+    #[actorize]
+    impl Panics {
         pub fn new() -> Self {
             Self
         }
@@ -285,25 +429,24 @@ mod spawn_with_panic_observation {
     }
 
     #[tokio::test]
-    async fn supervisor_can_observe_actor_panic() {
-        PANIC_OBSERVED.store(false, Ordering::SeqCst);
-        let handle = PanicActorHandle::new();
+    async fn panic_in_actor_is_cleaned_up_from_registry() {
+        let sup = TrackingSupervisor::new();
+        let h = PanicsHandle::launch_with(Panics::new(), &sup);
 
-        // Fire the panicking call. The oneshot is dropped because the actor
-        // task panics before responding, so the handle method returns a
-        // RecvFromActorError — fine; we only care the supervisor saw it.
-        let _ = handle.boom().await;
+        // Trigger the panic. The handle method will return Err because the
+        // oneshot Sender held inside the killed Msg gets dropped.
+        let _ = h.boom().await;
 
-        // Give the supervisor's awaiter task a chance to record the panic.
         for _ in 0..50 {
-            if PANIC_OBSERVED.load(Ordering::SeqCst) {
+            if sup.alive_count() == 0 {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert!(
-            PANIC_OBSERVED.load(Ordering::SeqCst),
-            "supervisor should have caught the actor task panic",
+        assert_eq!(
+            sup.alive_count(),
+            0,
+            "watcher should remove the panicked actor from the registry"
         );
     }
 }

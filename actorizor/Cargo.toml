@@ -6,19 +6,24 @@ description = "Simple macro based actor framework for Tokio-based apps"
 repository = "https://github.com/SigilVault/actorizor"
 license = "Apache-2.0"
 
-[lib]
-proc-macro = true
-
 [dependencies]
-convert_case = "0.10.0"
-proc-macro2 = "1.0.103"
-quote = "1.0.41"
-syn = { version = "2.0.108", features = ["full"] }
+actorizor-macros = { version = "=0.2.0", path = "../actorizor-macros" }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tracing = "0.1"
 
 [dev-dependencies]
 thiserror = "2"
 tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [features]
-diagout = []
+default = []
+# Enables `TrackingSupervisor` — a name-keyed registry that watches actor
+# tasks, emits a `tracing` event on exit/panic, and exposes
+# alive_count/snapshot/abort_by_name/abort_by_id/abort_all controls. The
+# bare `Supervisor` trait and `TokioSpawn` are always available.
+tracking = []
+# Forwards to actorizor-macros — emits the pretty-printed macro expansion at
+# compile time for debugging. Not user-facing.
+diagout = ["actorizor-macros/diagout"]
