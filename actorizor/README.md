@@ -125,7 +125,33 @@ Runnable, narrated demos live in [`examples/`](examples/):
 | `constructors` | `cargo run --example constructors` | what becomes a ctor/method, and what is *not* on the handle |
 | `lifecycle` | `cargo run --example lifecycle` | natural exit vs `shutdown()` vs `abort()` |
 | `custom_supervisor` | `cargo run --example custom_supervisor` | implementing `Supervisor` yourself |
+| `generic` | `cargo run --example generic` | a generic actor: two instantiations, non-`Clone` payload, where-clause |
 | `supervisor` | `cargo run --example supervisor --features tracking` | the bundled `TrackingSupervisor` |
+
+## Generics
+
+Impl-level **type** and **const** generics are supported, including
+`where`-clauses:
+
+```rust
+#[actorizor::actorize]
+impl<T: Send + 'static> Store<T> {
+    pub fn new() -> Self { Self { items: Vec::new() } }
+    pub fn push(&mut self, item: T) -> usize { self.items.push(item); self.items.len() }
+}
+
+let s = StoreHandle::<String>::new();
+```
+
+The generated `StoreHandle<T>` is `Clone` **even when `T` is not** (the
+impl is hand-written, not derived). What's *not* supported, rejected at
+compile time with a clear error:
+
+- **Generic methods** — `pub fn foo<U>(&self, x: U)`. Move the parameter
+  to the impl, or monomorphise at the call site.
+- **Lifetime parameters** — `impl<'a> MyActor<'a>`. An actor task is
+  spawned and must be `'static` (the actor may still hold `'static`
+  references internally).
 
 ## Limitations
 
@@ -133,8 +159,6 @@ Runnable, narrated demos live in [`examples/`](examples/):
   free function with a fixed name. Two `#[actorize]` blocks in the same
   module collide with a duplicate-symbol error. Put each actor in its own
   `mod { ... }` (or its own file).
-- Actor structs must not use generic parameters or lifetimes (`MyActor<T>`
-  or `MyActor<'a>` will fail to expand).
 - Associated functions with no `&self` receiver that don't return `Self`
   are neither methods nor constructors — they stay on the original `impl`
   block and are not exposed on the handle.
@@ -177,7 +201,10 @@ the handle instead.
 - All non-constructor handle methods are `async` and return `Result<T, MyActorHandleError>`.
 - Queue depth defaults to 10; override with `#[actorizor::actorize(32)]` or
   `#[actorizor::actorize(qdepth = 32)]`.
-- Actor structs must not use generics or lifetimes (`MyActor<T>` or `MyActor<'a>` will fail).
+- Impl-level type/const generics + where-clauses are supported
+  (`impl<T: Bound> MyActor<T>`). Generic *methods* (`fn f<U>(…)`) and
+  lifetime parameters (`impl<'a> MyActor<'a>`) are rejected with a clear
+  compile error.
 - One actor per module — the macro emits a module-scoped `run_actor`; two actors in one
   module collide. Wrap each in its own `mod`.
 
