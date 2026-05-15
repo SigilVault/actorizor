@@ -199,13 +199,22 @@ the handle instead.
   (e.g. `pub fn new() -> Self` becomes `MyActorHandle::new()`).
 - A `pub fn` with no `&self` receiver that does NOT return `Self` is neither a method nor a
   constructor — it is not exposed on the handle.
-- All non-constructor handle methods are `async` and return `Result<T, MyActorHandleError>`.
+- All non-constructor handle methods are `async` and return `Result<T, MyActorHandleError>`
+  (for a generic actor the error is `MyActorHandleError<…>`; you rarely name it — use `?`).
+- After `abort()` or `shutdown()`, further handle method calls return an `Err`. Don't treat a
+  post-teardown call as infallible.
 - Queue depth defaults to 10; override with `#[actorizor::actorize(32)]` or
-  `#[actorizor::actorize(qdepth = 32)]`.
-- Impl-level type/const generics + where-clauses are supported
-  (`impl<T: Bound> MyActor<T>`). Generic *methods* (`fn f<U>(…)`) and
-  lifetime parameters (`impl<'a> MyActor<'a>`) are rejected with a clear
-  compile error.
+  `#[actorizor::actorize(qdepth = 32)]`. `qdepth = 0` is a compile error.
+- Impl-level type/const generics + `where`-clauses are supported
+  (`impl<T: Bound> MyActor<T>`, `impl<const N: usize> Buf<N>`). Generic *methods*
+  (`fn f<U>(…)`) and lifetime parameters (`impl<'a> MyActor<'a>`) are rejected with a
+  clear compile error.
+  - Every generic param must be `Send + 'static` (the actor task is spawned). Owned
+    custom structs, `&'static` references, `Box<_>`, and `Arc<_>` are fine. **`Rc<_>` is
+    NOT** — it is `!Send`; use `Arc`. (No `T: Clone`/`Debug` needed — the handle/error
+    are `Clone`/`Debug` regardless of `T`.)
+  - Name the type parameter at the construction call site for a generic actor:
+    `StoreHandle::<u64>::new()` / `StoreHandle::<u64>::launch_with(Store::new(), &sup)`.
 - One actor per module — the macro emits a module-scoped `run_actor`; two actors in one
   module collide. Wrap each in its own `mod`.
 
