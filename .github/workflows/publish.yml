@@ -14,17 +14,58 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Verify tag matches Cargo.toml version
+      # The crate is split into `actorizor` (lib) + `actorizor-macros`
+      # (proc-macro), versioned in lockstep with a `=X.Y.Z` pin. The release
+      # tag, both Cargo.toml versions, and that pin must all agree before we
+      # publish anything irreversible.
+      - name: Verify tag + workspace versions all agree
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION=$(grep '^version' actorizor/Cargo.toml | head -1 | awk -F'"' '{print $2}')
-          if [ "$TAG" != "$CARGO_VERSION" ]; then
-            echo "Error: release tag '$TAG' does not match actorizor/Cargo.toml version '$CARGO_VERSION'"
-            exit 1
-          fi
-          echo "Tag and Cargo.toml version match: $TAG"
+          LIB_VER=$(grep '^version' actorizor/Cargo.toml | head -1 | awk -F'"' '{print $2}')
+          MAC_VER=$(grep '^version' actorizor-macros/Cargo.toml | head -1 | awk -F'"' '{print $2}')
+          # `actorizor-macros = { version = "=0.2.0", path = "..." }`
+          PIN=$(grep 'actorizor-macros = {' actorizor/Cargo.toml \
+                | sed -E 's/.*version = "=?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
 
-      - name: Publish to crates.io
+          echo "release tag           : $TAG"
+          echo "actorizor version     : $LIB_VER"
+          echo "actorizor-macros ver  : $MAC_VER"
+          echo "pin in actorizor dep  : $PIN"
+
+          fail=0
+          [ "$TAG" = "$LIB_VER" ] || { echo "::error::tag != actorizor version"; fail=1; }
+          [ "$TAG" = "$MAC_VER" ] || { echo "::error::tag != actorizor-macros version"; fail=1; }
+          [ "$TAG" = "$PIN" ]     || { echo "::error::tag != actorizor-macros pin in actorizor"; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+          echo "All versions agree: $TAG"
+
+      # Dependency order matters: `actorizor` depends on
+      # `actorizor-macros = "=$TAG"`, so the macro crate must exist on
+      # crates.io (and be visible in the index) before the lib publishes.
+      - name: Publish actorizor-macros
+        run: cargo publish -p actorizor-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for actorizor-macros to appear in the crates.io index
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          # Sparse-index path for a 4+ char crate name: /{a}{b}/{c}{d}/{name}
+          URL="https://index.crates.io/ac/to/actorizor-macros"
+          for i in $(seq 1 60); do
+            if curl -sf "$URL" | grep -q "\"vers\":\"$TAG\""; then
+              echo "actorizor-macros $TAG is visible in the index (attempt $i)"
+              exit 0
+            fi
+            echo "attempt $i: not yet visible, sleeping 10s…"
+            sleep 10
+          done
+          echo "::error::actorizor-macros $TAG did not appear in the index within 10 minutes"
+          exit 1
+
+      - name: Publish actorizor
         run: cargo publish -p actorizor
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
