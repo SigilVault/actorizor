@@ -18,7 +18,7 @@ The crates are versioned in lockstep with a `=` pin on `actorizor-macros`.
    - `launch_with<S: Supervisor>(actor, &S) -> Self` — the supervised entry point
    - `abort()` / `shutdown()` / `is_alive()` / `is_finished()`
    - async wrappers for every other pub method
-4. **`MyActorHandleError` enum** — via `thiserror`, covers send/receive failures.
+4. **`MyActorHandleError` enum** — hand-rolled `Debug`/`Display`/`Error`/`From` impls (no `thiserror`), covers send/receive failures.
 5. **`run_actor` free function** — owns the actor, biased `select!` over `shutdown.notified()` and `receiver.recv()`, dispatches to `handle_msg`, logs per-message errors via `tracing::warn!`.
 
 ## Key internal types
@@ -78,9 +78,41 @@ Both methods exist on every Handle, regardless of which constructor or `launch_w
 - **`shutdown()`** — calls `notify_waiters()` on the shared `Arc<Notify>`. The biased `select!` in `run_actor` exits on the next poll. The current in-flight message (if any) completes first. Sender clones are not dropped, so post-shutdown calls succeed at send but fail at recv.
 - **`is_alive()` / `is_finished()`** — read `AbortHandle::is_finished()`. Suitable for cheap pre-call checks; race conditions can still produce send/recv errors if the task dies between the check and the call.
 
+## Dependency resolution (the `__private` re-export)
+
+Generated code does **not** name `::tokio::…` / `::tracing::…` directly any
+more. It emits `::actorizor::__private::tokio::…` and
+`::actorizor::__private::tracing::…`, where `__private` is a
+`#[doc(hidden)]` module in `actorizor/src/lib.rs` that does
+`pub use tokio; pub use tracing;`. Consequences:
+
+- Users only need `actorizor` in their `Cargo.toml`. They no longer have to
+  declare `tokio`/`tracing` solely to satisfy generated code, and there is
+  no `thiserror` requirement (the error enum's impls are hand-rolled in
+  `error_enum_stream`).
+- The user still controls the tokio version: tokio is a single semver-1.x
+  crate, Cargo unifies actorizor's `tokio = "1"` floor with the user's own
+  (always-present, for the runtime) tokio dependency; the user's constraint
+  wins. actorizor only imposes a permissive version floor + an additive
+  feature floor (`macros`, `rt`, `sync`).
+- `actorizor`'s `[dependencies]` therefore carries `tokio` (with those
+  features) and `tracing` — they are real runtime deps now, not just
+  user-side expectations.
+- **Crate-rename caveat (LLM-relevant edge case):** the macro hardcodes the
+  path `::actorizor::__private::…`. If a user renames the crate in
+  `Cargo.toml` — `foo = { package = "actorizor" }` — generated code won't
+  resolve (`::actorizor` isn't a valid path). The robust fix would be the
+  `proc-macro-crate` crate (what serde-derive uses); we deliberately did
+  *not* pull that in — it's a weird enough case that a human won't hit it,
+  but an LLM editing a downstream `Cargo.toml` might. If you're an agent:
+  do not rename the `actorizor` dependency.
+
 ## Error logging in `run_actor`
 
-The generated `run_actor` loop calls `::tracing::warn!(actor = stringify!(Actor), error = ?e, "actor message handling failed")` when `handle_msg` returns Err. Users must therefore have `tracing` as a direct dependency.
+The generated `run_actor` loop calls
+`::actorizor::__private::tracing::warn!(actor = stringify!(Actor), error = ?e, "actor message handling failed")`
+when `handle_msg` returns Err. The `tracing` dependency is satisfied through
+the re-export; users don't declare it themselves.
 
 ## diagout feature
 

@@ -61,3 +61,18 @@ pub use supervisor::{Supervisor, TokioSpawn};
 
 #[cfg(feature = "tracking")]
 pub use supervisor::{ActorSnapshot, TrackingSupervisor};
+
+/// Implementation detail. The `actorize` macro emits paths into this module
+/// (`::actorizor::__private::tokio::…`, `…::tracing::…`) so generated code
+/// resolves against *actorizor's* dependency tree, not the user's. This
+/// means consumers only need `actorizor` in their `Cargo.toml` — they do
+/// not have to (and should not need to) add `tokio`/`tracing` solely to
+/// satisfy generated code.
+///
+/// Not part of the public API. No semver guarantees. Do not name these
+/// paths in your own code.
+#[doc(hidden)]
+pub mod __private {
+    pub use tokio;
+    pub use tracing;
+}

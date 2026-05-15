@@ -131,10 +131,7 @@ impl From<&ImplItemFn> for ActorFunc {
             ReturnType::Type(_, t) => *t,
             ReturnType::Default => parse_quote!(()),
         };
-        let is_async = match value.sig.asyncness {
-            Some(_) => true,
-            None => false,
-        };
+        let is_async = value.sig.asyncness.is_some();
 
         let inputs = value
             .sig
@@ -169,7 +166,7 @@ impl ActorFunc {
         let variant: Variant = parse_quote!(
             #msg_name {
                 #(#data)*
-                respond_to: tokio::sync::oneshot::Sender<#output>
+                respond_to: ::actorizor::__private::tokio::sync::oneshot::Sender<#output>
             }
         );
 
@@ -194,7 +191,7 @@ impl ActorFunc {
 
         let handle_fn: ImplItemFn = parse_quote!(
             pub async fn #fn_name(&self, #(#fn_params)*) -> Result<#output, #handle_error_ident> {
-                let (respond_to, response) = tokio::sync::oneshot::channel();
+                let (respond_to, response) = ::actorizor::__private::tokio::sync::oneshot::channel();
                 let msg = #msg_enum_name::#msg_name {
                     #(#msg_pasthru)*
                     respond_to,
@@ -318,15 +315,15 @@ impl Root {
         quote! {
             #[derive(Clone)]
             pub struct #handle_ident {
-                sender: ::tokio::sync::mpsc::Sender<#message_enum_ident>,
+                sender: ::actorizor::__private::tokio::sync::mpsc::Sender<#message_enum_ident>,
                 /// AbortHandle for the actor task. Cloned across every
                 /// Handle clone; `abort()` fires through this. The Handle
                 /// uses it for `is_alive` / `is_finished` queries too.
-                abort: ::tokio::task::AbortHandle,
+                abort: ::actorizor::__private::tokio::task::AbortHandle,
                 /// Shared cooperative-shutdown signal. `shutdown()` calls
                 /// `notify_waiters()`; `run_actor`'s biased `select!` exits
                 /// on `notified()`.
-                shutdown: ::std::sync::Arc<::tokio::sync::Notify>,
+                shutdown: ::std::sync::Arc<::actorizor::__private::tokio::sync::Notify>,
             }
 
             impl #handle_ident {
@@ -340,8 +337,8 @@ impl Root {
                 where
                     __ActorizorSup: ::actorizor::Supervisor,
                 {
-                    let (sender, receiver) = ::tokio::sync::mpsc::channel(#qdepth);
-                    let shutdown = ::std::sync::Arc::new(::tokio::sync::Notify::new());
+                    let (sender, receiver) = ::actorizor::__private::tokio::sync::mpsc::channel(#qdepth);
+                    let shutdown = ::std::sync::Arc::new(::actorizor::__private::tokio::sync::Notify::new());
                     let abort = sup.spawn(
                         stringify!(#actor_ident),
                         run_actor(actor, receiver, shutdown.clone()),
@@ -414,18 +411,18 @@ impl Root {
         quote! {
             async fn run_actor(
                 mut actor: #actor_ident,
-                mut receiver: ::tokio::sync::mpsc::Receiver<#message_enum_ident>,
-                shutdown: ::std::sync::Arc<::tokio::sync::Notify>,
+                mut receiver: ::actorizor::__private::tokio::sync::mpsc::Receiver<#message_enum_ident>,
+                shutdown: ::std::sync::Arc<::actorizor::__private::tokio::sync::Notify>,
             ) {
                 loop {
-                    ::tokio::select! {
+                    ::actorizor::__private::tokio::select! {
                         biased;
                         _ = shutdown.notified() => break,
                         maybe_msg = receiver.recv() => match maybe_msg {
                             None => break,
                             Some(msg) => match actor.handle_msg(msg).await {
                                 Ok(_) => continue,
-                                Err(e) => ::tracing::warn!(
+                                Err(e) => ::actorizor::__private::tracing::warn!(
                                     actor = stringify!(#actor_ident),
                                     error = ?e,
                                     "actor message handling failed",
@@ -442,17 +439,64 @@ impl Root {
         let msg_enum_ident = &self.message_enum_ident;
         let handle_error_ident = &self.handle_error_ident;
 
+        // Hand-rolled instead of `#[derive(thiserror::Error)]` so the
+        // generated code carries no `thiserror` dependency — the user's
+        // crate only needs `actorizor`. `tokio::sync::mpsc::error::SendError`
+        // and `oneshot::error::RecvError` both impl `Debug`/`Display`/`Error`
+        // unconditionally, so the `Debug` derive and `source()` are sound
+        // regardless of the message type.
         quote! {
-            #[derive(thiserror::Error, Debug)]
+            #[derive(Debug)]
             pub enum #handle_error_ident {
-                #[error("send to actor error")]
-                SendToActorError (#[from] tokio::sync::mpsc::error::SendError<#msg_enum_ident>),
-
-                #[error("receive from actor error")]
+                SendToActorError(
+                    ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+                ),
                 RespondToHandleError,
+                RecvFromActorError(
+                    ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+                ),
+            }
 
-                #[error("receive from actor error")]
-                RecvFromActorError(#[from] tokio::sync::oneshot::error::RecvError),
+            impl ::core::fmt::Display for #handle_error_ident {
+                fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                    match self {
+                        Self::SendToActorError(_) => f.write_str("send to actor error"),
+                        Self::RespondToHandleError => f.write_str("receive from actor error"),
+                        Self::RecvFromActorError(_) => f.write_str("receive from actor error"),
+                    }
+                }
+            }
+
+            impl ::std::error::Error for #handle_error_ident {
+                fn source(
+                    &self,
+                ) -> ::core::option::Option<&(dyn ::std::error::Error + 'static)> {
+                    match self {
+                        Self::SendToActorError(e) => ::core::option::Option::Some(e),
+                        Self::RespondToHandleError => ::core::option::Option::None,
+                        Self::RecvFromActorError(e) => ::core::option::Option::Some(e),
+                    }
+                }
+            }
+
+            impl ::core::convert::From<
+                ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+            > for #handle_error_ident {
+                fn from(
+                    e: ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+                ) -> Self {
+                    Self::SendToActorError(e)
+                }
+            }
+
+            impl ::core::convert::From<
+                ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+            > for #handle_error_ident {
+                fn from(
+                    e: ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+                ) -> Self {
+                    Self::RecvFromActorError(e)
+                }
             }
         }
     }
@@ -487,10 +531,10 @@ impl From<ItemImpl> for Root {
                             Some(ident) => ident,
                             None => &default_ident,
                         };
-                        let return_ident = format!("{}", return_ident);
-                        let actor_ident_str = format!("{}", actor_ident);
+                        let return_ident = return_ident.to_string();
+                        let actor_ident_str = actor_ident.to_string();
 
-                        return_ident == "Self".to_string() || return_ident == actor_ident_str
+                        return_ident == "Self" || return_ident == actor_ident_str
                     }
                     _ => false,
                 },
