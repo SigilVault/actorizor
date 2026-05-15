@@ -46,6 +46,20 @@
 //! }
 //! ```
 //!
+//! ## Generics
+//!
+//! Impl-level type and const generics (and `where`-clauses) are supported:
+//! `#[actorize] impl<T: Send + 'static> Store<T>`. Construct with the type
+//! named at the call site: `StoreHandle::<u64>::new()`.
+//!
+//! - Every generic param must be `Send + 'static` — the actor task is
+//!   spawned. Owned structs, `&'static` refs, `Box<_>`, and `Arc<_>` work;
+//!   **`Rc<_>` does not** (it is `!Send` — use `Arc`). No `T: Clone` /
+//!   `T: Debug` is required; the generated handle and error type are
+//!   `Clone`/`Debug` regardless of `T`.
+//! - Generic *methods* (`fn f<U>(…)`) and lifetime parameters
+//!   (`impl<'a> …`) are rejected at compile time with a clear error.
+//!
 //! ## Feature flags
 //!
 //! - `tracking` — enables [`TrackingSupervisor`] and [`ActorSnapshot`]. Off by

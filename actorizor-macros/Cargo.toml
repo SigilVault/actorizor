@@ -1,7 +1,9 @@
 [package]
 name = "actorizor-macros"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
+# Let-chains require Rust 1.88 (edition 2024 alone only implies 1.85).
+rust-version = "1.88"
 description = "Proc-macro implementation for the actorizor crate. Don't depend on this directly — depend on `actorizor` instead."
 repository = "https://github.com/SigilVault/actorizor"
 license = "Apache-2.0"

@@ -18,6 +18,11 @@ use tokio::task::AbortHandle;
 /// generic over the future type). Use `&MySupervisor` directly; if you need
 /// to box, wrap it in your own enum or use a concrete supervisor stored by
 /// value.
+///
+/// A supervisor type never needs to be generic over an actor's type
+/// parameters: `spawn` is generic over the *future* `F`, never the actor's
+/// `T`, and returns a concrete `AbortHandle`. One concrete supervisor value
+/// can drive many differently-instantiated generic actors at once.
 pub trait Supervisor: Send + Sync + 'static {
     /// Schedule `fut` and return its `AbortHandle`. `name` is the actor's
     /// type name (via `stringify!`), useful for logs and metric labels.

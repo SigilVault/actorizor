@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actorizor"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "actorizor-macros",
  "tokio",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "actorizor-macros"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "convert_case",
  "proc-macro2",

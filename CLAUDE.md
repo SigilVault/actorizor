@@ -118,11 +118,63 @@ the re-export; users don't declare it themselves.
 
 Forwarded from `actorizor` → `actorizor-macros`. Emits a `eprintln!` of the pretty-printed macro output at compile time. Debugging aid; not user-facing.
 
+## Generics
+
+Impl-level **type** and **const** generics are supported:
+`#[actorize] impl<T: Bound> MyActor<T>` and `impl<const N: usize> Buf<N>`,
+including `where`-clauses. The generated `MyActorHandle<T>` /
+`MyActorActorMsg<T>` / `MyActorHandleError<T>` / `run_actor<T>` all thread
+the generics through. Plumbing lives in `ActorGenerics` (one source of
+truth vending `decl` / `ty` / `where_` / `spawn` / `turbofish` / `phantom`).
+
+### Constraint on `T` (and the `Rc` trap)
+
+Every generic type param must be `Send + 'static`, because the actor task
+is handed to a `Supervisor` and `tokio::spawn`ed. This is not a special
+check — the spawn-path augmentation adds the bound, so violations surface
+as ordinary trait errors on the user's `#[actorize]`. Consequences for
+what `T` (or any message-carried payload) can be:
+
+- ✅ owned custom structs (no `Clone`/`Copy` needed — the *handle* is
+  `Clone` regardless), `&'static` references, `Box<_>`, `Arc<_>`.
+- ❌ `Rc<_>` — it is `!Send`, so e.g. `MyActorHandle::<Rc<Payload>>::new()`
+  fails with `error[E0277]: Rc<..> cannot be sent between threads safely`.
+  Use `Arc` instead. (Verified; documented in `examples/generic.rs` and
+  the `payload_shapes` module of `tests/generics.rs`.)
+- ❌ non-`'static` borrows — see the rejected list below; a lifetime
+  *parameter* is the macro-level form of this.
+
+Robustness points the implementation deliberately handles (these are the
+traps that made earlier attempts fragile):
+
+- **Self-type vs name.** `extract_base_ident` takes only the leading
+  segment ident for *naming* generated types; generic args are handled
+  separately by `ActorGenerics`. (Case-converting `MyActor<T>` is what
+  produced garbage idents before.)
+- **Perfect `Clone`.** `MyActorHandle<T>`'s `Clone` is hand-written, NOT
+  `#[derive(Clone)]` — a derive would add a bogus `T: Clone` bound. Same
+  for the error enum's `Debug` (hand-written, no `T: Debug`).
+- **Spawn bounds.** Type params get `Send + 'static` for the spawn path
+  (`run_actor`, inherent handle impl), added *only if absent* (scans both
+  param bounds and the where-clause) so there's no "bound defined in more
+  than one place" warning on the user's `#[actorize]`.
+- **Phantom.** A hidden `__ActorizorPhantom` variant on the message enum
+  carries `PhantomData<fn() -> (T, [(); N])>` so a generic param no method
+  references still counts as used (handle/error hold `…<MsgEnum<T>>`).
+  `handle_msg` gets a matching `unreachable!` arm.
+
+Rejected at expansion with a clear `syn::Error` at the offending span:
+
+- **Lifetime parameters** (`impl<'a> MyActor<'a>`) — the actor task is
+  spawned and must be `'static`.
+- **Method-level generics** (`pub fn foo<U>(…)`) — an enum variant can't
+  carry a generic that isn't a param of the enum; would need per-message
+  type erasure.
+
 ## Known limitations
 
-- Actor structs must not use generic parameters or lifetime parameters. `MyActor<T>` and `MyActor<'a>` will both fail to expand correctly. Known gap; tracked in the `generics` branch.
 - `pub(super)` and similar restricted visibility are currently passed through but not semantically restricted in generated code (TODO in `extract_functions_raw`).
-- **One actor per module.** The macro emits `run_actor` as a module-scoped free function with a fixed name, so two `#[actorize]` blocks in the same module will collide. Wrap each actor in its own `mod { ... }`. This is the convention the test suite follows.
+- **One actor per module.** The macro emits `run_actor` as a module-scoped free function with a fixed name, so two `#[actorize]` blocks in the same module will collide. Wrap each actor in its own `mod { ... }`. This is the convention the test/example suite follows.
 
 ## Test + example layout
 
@@ -137,6 +189,7 @@ bites for multiple actors *within one file* — those go in submodules.
 | `supervision.rs` | `launch_with` + `TokioSpawn` + a custom `Supervisor` impl |
 | `tracking.rs` | `TrackingSupervisor` (whole file `#![cfg(feature = "tracking")]`) |
 | `complex_impl.rs` | gnarly impl block: qdepth, many ctors, private fns, non-method assoc fns |
+| `generics.rs` | impl-level type/const generics, where-clauses, perfect-`Clone`, phantom path |
 
 ```
 # Default features:
@@ -150,6 +203,8 @@ cargo run --example basic
 cargo run --example constructors
 cargo run --example lifecycle
 cargo run --example custom_supervisor
+cargo run --example generic
+cargo run --example generic_supervisor
 cargo run --example supervisor --features tracking
 ```
 
@@ -162,6 +217,8 @@ asserts) so they double as docs.rs-visible documentation:
 | `constructors.rs` | `complex_impl.rs` | which fns become ctors/methods and which are NOT on the handle |
 | `lifecycle.rs` | `lifecycle.rs` | natural drop-exit vs `shutdown()` vs `abort()`, observed via a `Drop` impl |
 | `custom_supervisor.rs` | `supervision.rs` | implementing the `Supervisor` trait by hand (owned, no statics) |
+| `generic.rs` | `generics.rs` | generic actor at two instantiations, non-`Clone` payload, where-clause |
+| `generic_supervisor.rs` | `generics.rs::shared_supervisor` | one concrete custom `Supervisor` driving two differently-typed generic actors (proves `T` doesn't colour the supervisor) |
 | `supervisor.rs` | `tracking.rs` | `TrackingSupervisor` registry/snapshot/abort (needs `--features tracking`) |
 
 `examples/supervisor.rs` + `examples/custom_supervisor.rs` are the canonical
