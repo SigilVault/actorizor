@@ -127,6 +127,23 @@ including `where`-clauses. The generated `MyActorHandle<T>` /
 the generics through. Plumbing lives in `ActorGenerics` (one source of
 truth vending `decl` / `ty` / `where_` / `spawn` / `turbofish` / `phantom`).
 
+### Constraint on `T` (and the `Rc` trap)
+
+Every generic type param must be `Send + 'static`, because the actor task
+is handed to a `Supervisor` and `tokio::spawn`ed. This is not a special
+check — the spawn-path augmentation adds the bound, so violations surface
+as ordinary trait errors on the user's `#[actorize]`. Consequences for
+what `T` (or any message-carried payload) can be:
+
+- ✅ owned custom structs (no `Clone`/`Copy` needed — the *handle* is
+  `Clone` regardless), `&'static` references, `Box<_>`, `Arc<_>`.
+- ❌ `Rc<_>` — it is `!Send`, so e.g. `MyActorHandle::<Rc<Payload>>::new()`
+  fails with `error[E0277]: Rc<..> cannot be sent between threads safely`.
+  Use `Arc` instead. (Verified; documented in `examples/generic.rs` and
+  the `payload_shapes` module of `tests/generics.rs`.)
+- ❌ non-`'static` borrows — see the rejected list below; a lifetime
+  *parameter* is the macro-level form of this.
+
 Robustness points the implementation deliberately handles (these are the
 traps that made earlier attempts fragile):
 
