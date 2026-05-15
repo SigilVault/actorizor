@@ -115,6 +115,18 @@ See [`examples/supervisor.rs`](examples/supervisor.rs) for a full
 walkthrough — run it with
 `cargo run --example supervisor --features tracking`.
 
+## Examples
+
+Runnable, narrated demos live in [`examples/`](examples/):
+
+| Example | Run | Shows |
+|---|---|---|
+| `basic` | `cargo run --example basic` | construct, call sync/async methods, clone-and-share |
+| `constructors` | `cargo run --example constructors` | what becomes a ctor/method, and what is *not* on the handle |
+| `lifecycle` | `cargo run --example lifecycle` | natural exit vs `shutdown()` vs `abort()` |
+| `custom_supervisor` | `cargo run --example custom_supervisor` | implementing `Supervisor` yourself |
+| `supervisor` | `cargo run --example supervisor --features tracking` | the bundled `TrackingSupervisor` |
+
 ## Limitations
 
 - **One actor per module.** The macro emits a module-scoped `run_actor`

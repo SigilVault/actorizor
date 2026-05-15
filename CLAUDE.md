@@ -145,10 +145,29 @@ cargo test -p actorizor
 # Everything including TrackingSupervisor:
 cargo test -p actorizor --features tracking
 
-# The runnable supervisor demo (also rendered on docs.rs):
+# Runnable examples (all in actorizor/examples/, rendered on docs.rs):
+cargo run --example basic
+cargo run --example constructors
+cargo run --example lifecycle
+cargo run --example custom_supervisor
 cargo run --example supervisor --features tracking
 ```
 
-`actorizor/examples/supervisor.rs` is the canonical "this is what your
-supervisor wiring should look like" reference. Living in the lib crate, it
-shows up on docs.rs.
+Examples mirror the test coverage but are narrated (println-driven, no
+asserts) so they double as docs.rs-visible documentation:
+
+| Example | Mirrors test | Shows |
+|---|---|---|
+| `basic.rs` | `basic.rs` | construct, sync/async methods, multi-arg, clone-and-share |
+| `constructors.rs` | `complex_impl.rs` | which fns become ctors/methods and which are NOT on the handle |
+| `lifecycle.rs` | `lifecycle.rs` | natural drop-exit vs `shutdown()` vs `abort()`, observed via a `Drop` impl |
+| `custom_supervisor.rs` | `supervision.rs` | implementing the `Supervisor` trait by hand (owned, no statics) |
+| `supervisor.rs` | `tracking.rs` | `TrackingSupervisor` registry/snapshot/abort (needs `--features tracking`) |
+
+`examples/supervisor.rs` + `examples/custom_supervisor.rs` are the canonical
+"this is what your supervisor wiring should look like" references.
+
+When adding an example: one actor per file is automatic (each example is
+its own crate root). Non-`tracking` examples are auto-discovered; anything
+needing a feature gets an explicit `[[example]]` `required-features` stanza
+in `actorizor/Cargo.toml` (only `supervisor` does today).
