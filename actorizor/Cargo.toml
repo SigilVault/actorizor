@@ -15,8 +15,7 @@ tracing = "0.1"
 # Tests/examples are separate compilation units — they can't see the
 # library's own `[dependencies]`, so anything they name directly must be a
 # dev-dep. The supervisor example uses `tracing::Level` +
-# `tracing_subscriber`. No thiserror: generated code no longer depends on
-# it, and nothing in tests/examples references it.
+# `tracing_subscriber`.
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros", "rt-multi-thread"] }
 tracing = "0.1"

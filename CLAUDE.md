@@ -18,7 +18,7 @@ The crates are versioned in lockstep with a `=` pin on `actorizor-macros`.
    - `launch_with<S: Supervisor>(actor, &S) -> Self` — the supervised entry point
    - `abort()` / `shutdown()` / `is_alive()` / `is_finished()`
    - async wrappers for every other pub method
-4. **`MyActorHandleError` enum** — hand-rolled `Debug`/`Display`/`Error`/`From` impls (no `thiserror`), covers send/receive failures.
+4. **`MyActorHandleError` enum** — hand-rolled `Debug`/`Display`/`Error`/`From` impls, covers send/receive failures.
 5. **`run_actor` free function** — owns the actor, biased `select!` over `shutdown.notified()` and `receiver.recv()`, dispatches to `handle_msg`, logs per-message errors via `tracing::warn!`.
 
 ## Key internal types
@@ -87,9 +87,9 @@ more. It emits `::actorizor::__private::tokio::…` and
 `pub use tokio; pub use tracing;`. Consequences:
 
 - Users only need `actorizor` in their `Cargo.toml`. They no longer have to
-  declare `tokio`/`tracing` solely to satisfy generated code, and there is
-  no `thiserror` requirement (the error enum's impls are hand-rolled in
-  `error_enum_stream`).
+  declare `tokio`/`tracing` solely to satisfy generated code (the error
+  enum's impls are hand-rolled in `error_enum_stream`, so generated code
+  pulls in no derive crates either).
 - The user still controls the tokio version: tokio is a single semver-1.x
   crate, Cargo unifies actorizor's `tokio = "1"` floor with the user's own
   (always-present, for the runtime) tokio dependency; the user's constraint

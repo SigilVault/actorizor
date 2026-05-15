@@ -459,12 +459,12 @@ impl Root {
         let msg_enum_ident = &self.message_enum_ident;
         let handle_error_ident = &self.handle_error_ident;
 
-        // Hand-rolled instead of `#[derive(thiserror::Error)]` so the
-        // generated code carries no `thiserror` dependency — the user's
-        // crate only needs `actorizor`. `tokio::sync::mpsc::error::SendError`
-        // and `oneshot::error::RecvError` both impl `Debug`/`Display`/`Error`
-        // unconditionally, so the `Debug` derive and `source()` are sound
-        // regardless of the message type.
+        // The error impls are hand-written (not derived) so generated code
+        // pulls in no extra crates — consumers only need `actorizor`.
+        // Soundness invariant: `tokio::sync::mpsc::error::SendError` and
+        // `oneshot::error::RecvError` impl `Debug`/`Display`/`Error`
+        // unconditionally, so the `Debug` derive and `source()` below hold
+        // regardless of the message type (which is NOT `Debug`).
         quote! {
             #[derive(Debug)]
             pub enum #handle_error_ident {

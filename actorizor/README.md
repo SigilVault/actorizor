@@ -36,7 +36,7 @@ async fn main() {
 You only need `actorizor` in your `Cargo.toml`. The generated code resolves
 its `tokio` / `tracing` usage through actorizor's own dependency tree (via a
 hidden re-export), so you don't have to declare those just to satisfy the
-macro, and there's no `thiserror` requirement at all. You'll still depend on
+macro. You'll still depend on
 `tokio` yourself in practice — you need a runtime for `#[tokio::main]` — and
 because tokio is a single semver-`1.x` crate, Cargo unifies your version
 with actorizor's: *you* choose the exact tokio version, actorizor only sets
@@ -193,7 +193,7 @@ the handle instead.
 ### Required dependencies
 
 Only `actorizor` itself. Generated code references `tokio`/`tracing` through
-actorizor's hidden re-export, and uses no `thiserror`. You'll have `tokio`
+actorizor's hidden re-export. You'll have `tokio`
 as a direct dependency anyway (you need a runtime), and Cargo unifies that
 single semver-1.x tokio with actorizor's — your version wins. Don't rename
 the `actorizor` crate in `Cargo.toml` (e.g. `foo = { package = "actorizor" }`):
