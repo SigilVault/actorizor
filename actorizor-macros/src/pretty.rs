@@ -18,15 +18,19 @@ pub fn pretty_print(tokens: impl ToTokens) -> Result<String, Box<dyn std::error:
         .expect("Unable to start `rustfmt`. Is it installed?");
 
     let mut stdin = child.stdin.take().unwrap();
-    write!(stdin, "{tokens}")?;
-    stdin.flush()?;
+    // Capture the write result but do NOT early-return on it — we must
+    // always reach `wait_with_output` so the child is reaped (no zombie).
+    let write_res = write!(stdin, "{tokens}").and_then(|()| stdin.flush());
     drop(stdin);
+
+    let output = child.wait_with_output()?;
+    write_res?;
 
     let Output {
         status,
         stdout,
         stderr,
-    } = child.wait_with_output()?;
+    } = output;
     let stdout = String::from_utf8_lossy(&stdout);
     let stderr = String::from_utf8_lossy(&stderr);
 

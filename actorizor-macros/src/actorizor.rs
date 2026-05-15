@@ -1,9 +1,86 @@
 use convert_case::{Case, Casing as _};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use syn::{Arm, FnArg, Ident, ImplItemFn, ItemImpl, Pat, ReturnType, Type, Variant, parse_quote};
+use syn::parse::{Parse, ParseStream};
+use syn::{
+    Arm, FnArg, Ident, ImplItemFn, ItemImpl, LitInt, Pat, ReturnType, Token, Type, Variant,
+    parse_quote,
+};
 
 const STD_QUEUE_DEPTH: usize = 10;
+
+// ---------------------------------------------------------------------------
+// Attribute parsing
+// ---------------------------------------------------------------------------
+//
+// Forms accepted:
+//
+//   #[actorize]
+//   #[actorize(32)]           // positional qdepth
+//   #[actorize(qdepth = 32)]  // named qdepth
+//
+// Supervision is provided via the generated `Handle::launch_with(actor, &S)`
+// method, not via the attribute. See the parent crate's `Supervisor` trait
+// + `TokioSpawn` / `TrackingSupervisor` types.
+
+struct AttrArgs {
+    qdepth: Option<usize>,
+}
+
+/// Parse a `LitInt` as the mailbox depth and reject `0` at expansion time.
+/// `tokio::sync::mpsc::channel(0)` panics at runtime (the minimum bounded
+/// capacity is 1), so catching it here turns a launch-time panic into a
+/// clear compile error pointing at the literal.
+fn parse_qdepth(lit: &LitInt) -> syn::Result<usize> {
+    let v: usize = lit.base10_parse()?;
+    if v == 0 {
+        return Err(syn::Error::new(
+            lit.span(),
+            "actorize queue depth must be at least 1 (tokio::sync::mpsc::channel(0) panics)",
+        ));
+    }
+    Ok(v)
+}
+
+impl Parse for AttrArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut qdepth = None;
+
+        while !input.is_empty() {
+            if input.peek(LitInt) {
+                let lit: LitInt = input.parse()?;
+                qdepth = Some(parse_qdepth(&lit)?);
+            } else if input.peek(Ident) {
+                let ident: Ident = input.parse()?;
+                let _: Token![=] = input.parse()?;
+                match ident.to_string().as_str() {
+                    "qdepth" => {
+                        let lit: LitInt = input.parse()?;
+                        qdepth = Some(parse_qdepth(&lit)?);
+                    }
+                    other => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!(
+                                "unknown actorize argument `{other}` (expected `qdepth`)"
+                            ),
+                        ));
+                    }
+                }
+            } else {
+                return Err(input.error(
+                    "expected an integer literal (qdepth) or `qdepth = N`",
+                ));
+            }
+
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        Ok(Self { qdepth })
+    }
+}
 
 #[derive(Clone)]
 struct FuncInput {
@@ -69,10 +146,7 @@ impl From<&ImplItemFn> for ActorFunc {
             ReturnType::Type(_, t) => *t,
             ReturnType::Default => parse_quote!(()),
         };
-        let is_async = match value.sig.asyncness {
-            Some(_) => true,
-            None => false,
-        };
+        let is_async = value.sig.asyncness.is_some();
 
         let inputs = value
             .sig
@@ -107,7 +181,7 @@ impl ActorFunc {
         let variant: Variant = parse_quote!(
             #msg_name {
                 #(#data)*
-                respond_to: tokio::sync::oneshot::Sender<#output>
+                respond_to: ::actorizor::__private::tokio::sync::oneshot::Sender<#output>
             }
         );
 
@@ -132,7 +206,7 @@ impl ActorFunc {
 
         let handle_fn: ImplItemFn = parse_quote!(
             pub async fn #fn_name(&self, #(#fn_params)*) -> Result<#output, #handle_error_ident> {
-                let (respond_to, response) = tokio::sync::oneshot::channel();
+                let (respond_to, response) = ::actorizor::__private::tokio::sync::oneshot::channel();
                 let msg = #msg_enum_name::#msg_name {
                     #(#msg_pasthru)*
                     respond_to,
@@ -169,7 +243,7 @@ impl ActorFunc {
         quote! {
             #sig -> Self {
                 #init_call;
-                Self::launch_actor(actor)
+                Self::launch_unsupervised(actor)
             }
         }
         .to_token_stream()
@@ -256,15 +330,75 @@ impl Root {
         quote! {
             #[derive(Clone)]
             pub struct #handle_ident {
-                sender: tokio::sync::mpsc::Sender<#message_enum_ident>,
+                sender: ::actorizor::__private::tokio::sync::mpsc::Sender<#message_enum_ident>,
+                /// AbortHandle for the actor task. Cloned across every
+                /// Handle clone; `abort()` fires through this. The Handle
+                /// uses it for `is_alive` / `is_finished` queries too.
+                abort: ::actorizor::__private::tokio::task::AbortHandle,
+                /// Shared cooperative-shutdown signal. `shutdown()` calls
+                /// `notify_one()` (sticky permit — survives until consumed,
+                /// so a shutdown raced while `run_actor` is inside
+                /// `handle_msg` is not lost); `run_actor`'s biased
+                /// `select!` exits on the next `notified()`.
+                shutdown: ::std::sync::Arc<::actorizor::__private::tokio::sync::Notify>,
             }
 
             impl #handle_ident {
-                fn launch_actor(mut actor: #actor_ident) -> Self {
-                    let (sender, receiver) = tokio::sync::mpsc::channel(#qdepth);
-                    tokio::task::spawn(run_actor(actor, receiver));
+                /// Construct the channel + shutdown signal + actor task,
+                /// using the supplied supervisor to schedule the task.
+                /// Returns the Handle wrapping the sender/abort/shutdown.
+                pub fn launch_with<__ActorizorSup>(
+                    actor: #actor_ident,
+                    sup: &__ActorizorSup,
+                ) -> Self
+                where
+                    __ActorizorSup: ::actorizor::Supervisor,
+                {
+                    let (sender, receiver) = ::actorizor::__private::tokio::sync::mpsc::channel(#qdepth);
+                    let shutdown = ::std::sync::Arc::new(::actorizor::__private::tokio::sync::Notify::new());
+                    let abort = sup.spawn(
+                        stringify!(#actor_ident),
+                        run_actor(actor, receiver, shutdown.clone()),
+                    );
+                    Self { sender, abort, shutdown }
+                }
 
-                    Self { sender }
+                /// Unsupervised launch: schedules the actor task via
+                /// `tokio::task::spawn` and discards the JoinHandle. Used
+                /// internally by the generated constructors below.
+                fn launch_unsupervised(actor: #actor_ident) -> Self {
+                    Self::launch_with(actor, &::actorizor::TokioSpawn)
+                }
+
+                /// Forcefully abort the actor task. The current message
+                /// (if any) is dropped mid-poll; subsequent handle method
+                /// calls will fail with `RecvFromActorError` once the
+                /// oneshot Sender held inside the killed Msg is dropped.
+                pub fn abort(&self) {
+                    self.abort.abort();
+                }
+
+                /// Cooperatively signal the actor to stop. Uses
+                /// `notify_one()` so the signal is a sticky permit: if
+                /// `run_actor` is mid-`handle_msg` (not currently awaiting
+                /// `notified()`) when this is called, the permit persists
+                /// and the next loop iteration's `notified()` consumes it
+                /// immediately. The loop exits without dropping the Sender
+                /// clones, so this handle's methods still send successfully
+                /// but `recv()` fails once the actor has exited.
+                pub fn shutdown(&self) {
+                    self.shutdown.notify_one();
+                }
+
+                /// Returns `true` if the actor task is still running.
+                pub fn is_alive(&self) -> bool {
+                    !self.abort.is_finished()
+                }
+
+                /// Returns `true` if the actor task has exited (clean,
+                /// panic, or abort).
+                pub fn is_finished(&self) -> bool {
+                    self.abort.is_finished()
                 }
 
                 #(#constructor_funcs)*
@@ -297,13 +431,25 @@ impl Root {
         quote! {
             async fn run_actor(
                 mut actor: #actor_ident,
-                mut receiver: tokio::sync::mpsc::Receiver<#message_enum_ident>,
+                mut receiver: ::actorizor::__private::tokio::sync::mpsc::Receiver<#message_enum_ident>,
+                shutdown: ::std::sync::Arc<::actorizor::__private::tokio::sync::Notify>,
             ) {
-                while let Some(msg) = receiver.recv().await {
-                    match actor.handle_msg(msg).await {
-                        Ok(_) => continue,
-                        Err(e) => eprintln!("error during actor message handling: {e:?}"),
-                    };
+                loop {
+                    ::actorizor::__private::tokio::select! {
+                        biased;
+                        _ = shutdown.notified() => break,
+                        maybe_msg = receiver.recv() => match maybe_msg {
+                            None => break,
+                            Some(msg) => match actor.handle_msg(msg).await {
+                                Ok(_) => continue,
+                                Err(e) => ::actorizor::__private::tracing::warn!(
+                                    actor = stringify!(#actor_ident),
+                                    error = ?e,
+                                    "actor message handling failed",
+                                ),
+                            },
+                        },
+                    }
                 }
             }
         }
@@ -313,17 +459,64 @@ impl Root {
         let msg_enum_ident = &self.message_enum_ident;
         let handle_error_ident = &self.handle_error_ident;
 
+        // The error impls are hand-written (not derived) so generated code
+        // pulls in no extra crates — consumers only need `actorizor`.
+        // Soundness invariant: `tokio::sync::mpsc::error::SendError` and
+        // `oneshot::error::RecvError` impl `Debug`/`Display`/`Error`
+        // unconditionally, so the `Debug` derive and `source()` below hold
+        // regardless of the message type (which is NOT `Debug`).
         quote! {
-            #[derive(thiserror::Error, Debug)]
+            #[derive(Debug)]
             pub enum #handle_error_ident {
-                #[error("send to actor error")]
-                SendToActorError (#[from] tokio::sync::mpsc::error::SendError<#msg_enum_ident>),
-
-                #[error("receive from actor error")]
+                SendToActorError(
+                    ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+                ),
                 RespondToHandleError,
+                RecvFromActorError(
+                    ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+                ),
+            }
 
-                #[error("receive from actor error")]
-                RecvFromActorError(#[from] tokio::sync::oneshot::error::RecvError),
+            impl ::core::fmt::Display for #handle_error_ident {
+                fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                    match self {
+                        Self::SendToActorError(_) => f.write_str("send to actor error"),
+                        Self::RespondToHandleError => f.write_str("receive from actor error"),
+                        Self::RecvFromActorError(_) => f.write_str("receive from actor error"),
+                    }
+                }
+            }
+
+            impl ::std::error::Error for #handle_error_ident {
+                fn source(
+                    &self,
+                ) -> ::core::option::Option<&(dyn ::std::error::Error + 'static)> {
+                    match self {
+                        Self::SendToActorError(e) => ::core::option::Option::Some(e),
+                        Self::RespondToHandleError => ::core::option::Option::None,
+                        Self::RecvFromActorError(e) => ::core::option::Option::Some(e),
+                    }
+                }
+            }
+
+            impl ::core::convert::From<
+                ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+            > for #handle_error_ident {
+                fn from(
+                    e: ::actorizor::__private::tokio::sync::mpsc::error::SendError<#msg_enum_ident>,
+                ) -> Self {
+                    Self::SendToActorError(e)
+                }
+            }
+
+            impl ::core::convert::From<
+                ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+            > for #handle_error_ident {
+                fn from(
+                    e: ::actorizor::__private::tokio::sync::oneshot::error::RecvError,
+                ) -> Self {
+                    Self::RecvFromActorError(e)
+                }
             }
         }
     }
@@ -358,10 +551,10 @@ impl From<ItemImpl> for Root {
                             Some(ident) => ident,
                             None => &default_ident,
                         };
-                        let return_ident = format!("{}", return_ident);
-                        let actor_ident_str = format!("{}", actor_ident);
+                        let return_ident = return_ident.to_string();
+                        let actor_ident_str = actor_ident.to_string();
 
-                        return_ident == "Self".to_string() || return_ident == actor_ident_str
+                        return_ident == "Self" || return_ident == actor_ident_str
                     }
                     _ => false,
                 },
@@ -432,22 +625,31 @@ pub fn actorize(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let ast = syn::parse::<ItemImpl>(item).expect("unable to get ast");
+    // Surface parse failures as a `compile_error!` at the offending span
+    // (a panic in a proc-macro produces a far worse "proc-macro panicked"
+    // diagnostic with no source location).
+    match actorize_inner(attr.into(), item.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn actorize_inner(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let ast = syn::parse2::<ItemImpl>(item)?;
     let mut root = Root::from(ast);
 
-    // This is awful but I dont fancy writing custom parser just for a single argument right now.
-    let mut qdepth = STD_QUEUE_DEPTH;
-    if attr.clone().into_iter().count() == 1 {
-        for tok in attr {
-            match tok {
-                proc_macro::TokenTree::Literal(literal) => {
-                    qdepth = format!("{}", literal).parse().unwrap();
-                }
-                _ => continue,
-            }
-        }
+    let args: AttrArgs = if attr.is_empty() {
+        AttrArgs { qdepth: None }
+    } else {
+        syn::parse2(attr)?
+    };
+
+    if let Some(q) = args.qdepth {
+        root.qdepth = q;
     }
-    root.qdepth = qdepth;
 
     let error_enum_stream = root.error_enum_stream();
     let impl_token_stream = root.impl_token_stream();
@@ -470,5 +672,5 @@ pub fn actorize(
             .unwrap_or("Error during pretty print".to_owned())
     );
 
-    implementation.into()
+    Ok(implementation)
 }
