@@ -349,3 +349,152 @@ mod payload_shapes {
         assert_eq!(h.count().await.unwrap(), 2);
     }
 }
+
+// --- one custom supervisor across TWO differently-typed generic actors
+//
+// The point: an actor's generic parameter must NOT "colour" the
+// supervisor. `Supervisor::spawn` is generic over the *future* type, never
+// over the actor's `T`, and returns a concrete `AbortHandle`. So a single,
+// concrete (non-generic) supervisor value can drive `Vault<Secret>` and
+// `Meter<u64>` simultaneously. If generics leaked, this module would not
+// compile (the supervisor would need a `T`, or two different `T`s at
+// once). Compilation + the assertions ARE the proof.
+mod shared_supervisor {
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use actorizor::Supervisor;
+    use tokio::task::AbortHandle;
+
+    /// A concrete, NON-generic supervisor. Note: no `<T>` anywhere on the
+    /// type, its fields, or its impl — only on `spawn`'s future param,
+    /// which is the actor-agnostic `F`.
+    pub struct MultiSup {
+        spawns: Arc<AtomicUsize>,
+        names: Arc<tokio::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl MultiSup {
+        fn new() -> Self {
+            Self {
+                spawns: Arc::new(AtomicUsize::new(0)),
+                names: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Supervisor for MultiSup {
+        fn spawn<F>(&self, name: &'static str, fut: F) -> AbortHandle
+        where
+            F: Future<Output = ()> + Send + 'static,
+        {
+            self.spawns.fetch_add(1, Ordering::SeqCst);
+            let names = self.names.clone();
+            let jh = tokio::task::spawn(async move {
+                names.lock().await.push(name);
+                fut.await;
+            });
+            jh.abort_handle()
+        }
+    }
+
+    /// A non-primitive custom struct used as one actor's `T`.
+    #[derive(Debug, PartialEq)]
+    pub struct Secret {
+        pub bytes: Vec<u8>,
+    }
+
+    // Two actors, two modules (module-scoped `run_actor`).
+
+    mod vault {
+        use actorizor::actorize;
+
+        #[derive(Debug, Default)]
+        pub struct Vault<T> {
+            held: Vec<T>,
+        }
+
+        #[actorize]
+        impl<T: Send + 'static> Vault<T> {
+            pub fn new() -> Self {
+                Self { held: Vec::new() }
+            }
+            pub fn store(&mut self, v: T) -> usize {
+                self.held.push(v);
+                self.held.len()
+            }
+            pub fn count(&self) -> usize {
+                self.held.len()
+            }
+        }
+    }
+
+    mod meter {
+        use actorizor::actorize;
+
+        #[derive(Debug, Default)]
+        pub struct Meter<T> {
+            samples: Vec<T>,
+        }
+
+        #[actorize]
+        impl<T: Send + 'static> Meter<T> {
+            pub fn new() -> Self {
+                Self {
+                    samples: Vec::new(),
+                }
+            }
+            pub fn record(&mut self, v: T) -> usize {
+                self.samples.push(v);
+                self.samples.len()
+            }
+            pub fn total(&self) -> usize {
+                self.samples.len()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn one_supervisor_drives_two_generic_actors() {
+        // ONE concrete supervisor value. Not `MultiSup<Secret>`, not
+        // `MultiSup<u64>` — just `MultiSup`.
+        let sup = MultiSup::new();
+        let before = sup.spawns.load(Ordering::SeqCst);
+
+        // Actor A: generic over a custom struct.
+        let vault = vault::VaultHandle::<Secret>::launch_with(
+            vault::Vault::new(),
+            &sup,
+        );
+        // Actor B: same supervisor, *different* T (a primitive).
+        let meter = meter::MeterHandle::<u64>::launch_with(
+            meter::Meter::new(),
+            &sup,
+        );
+
+        assert_eq!(
+            vault
+                .store(Secret {
+                    bytes: vec![1, 2, 3]
+                })
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(meter.record(42).await.unwrap(), 1);
+        assert_eq!(meter.record(43).await.unwrap(), 2);
+
+        assert_eq!(vault.count().await.unwrap(), 1);
+        assert_eq!(meter.total().await.unwrap(), 2);
+
+        // The single supervisor saw both spawns and recorded both names.
+        assert_eq!(sup.spawns.load(Ordering::SeqCst), before + 2);
+        let names = sup.names.lock().await.clone();
+        assert!(names.contains(&"Vault"), "names = {names:?}");
+        assert!(names.contains(&"Meter"), "names = {names:?}");
+
+        // Lifecycle still works per-actor through the shared supervisor.
+        assert!(vault.is_alive() && meter.is_alive());
+    }
+}

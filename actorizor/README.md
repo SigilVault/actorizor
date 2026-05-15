@@ -126,6 +126,7 @@ Runnable, narrated demos live in [`examples/`](examples/):
 | `lifecycle` | `cargo run --example lifecycle` | natural exit vs `shutdown()` vs `abort()` |
 | `custom_supervisor` | `cargo run --example custom_supervisor` | implementing `Supervisor` yourself |
 | `generic` | `cargo run --example generic` | a generic actor: two instantiations, non-`Clone` payload, where-clause |
+| `generic_supervisor` | `cargo run --example generic_supervisor` | one custom `Supervisor` driving two differently-typed generic actors |
 | `supervisor` | `cargo run --example supervisor --features tracking` | the bundled `TrackingSupervisor` |
 
 ## Generics

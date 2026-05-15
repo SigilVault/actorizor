@@ -204,6 +204,7 @@ cargo run --example constructors
 cargo run --example lifecycle
 cargo run --example custom_supervisor
 cargo run --example generic
+cargo run --example generic_supervisor
 cargo run --example supervisor --features tracking
 ```
 
@@ -217,6 +218,7 @@ asserts) so they double as docs.rs-visible documentation:
 | `lifecycle.rs` | `lifecycle.rs` | natural drop-exit vs `shutdown()` vs `abort()`, observed via a `Drop` impl |
 | `custom_supervisor.rs` | `supervision.rs` | implementing the `Supervisor` trait by hand (owned, no statics) |
 | `generic.rs` | `generics.rs` | generic actor at two instantiations, non-`Clone` payload, where-clause |
+| `generic_supervisor.rs` | `generics.rs::shared_supervisor` | one concrete custom `Supervisor` driving two differently-typed generic actors (proves `T` doesn't colour the supervisor) |
 | `supervisor.rs` | `tracking.rs` | `TrackingSupervisor` registry/snapshot/abort (needs `--features tracking`) |
 
 `examples/supervisor.rs` + `examples/custom_supervisor.rs` are the canonical
