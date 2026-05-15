@@ -5,6 +5,7 @@ edition = "2024"
 description = "Simple macro based actor framework for Tokio-based apps"
 repository = "https://github.com/SigilVault/actorizor"
 license = "Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 actorizor-macros = { version = "=0.2.0", path = "../actorizor-macros" }
