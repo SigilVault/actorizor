@@ -1,6 +1,6 @@
 [package]
 name = "actorizor"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Simple macro based actor framework for Tokio-based apps"
 repository = "https://github.com/SigilVault/actorizor"
@@ -8,7 +8,7 @@ license = "Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-actorizor-macros = { version = "=0.2.0", path = "../actorizor-macros" }
+actorizor-macros = { version = "=0.2.1", path = "../actorizor-macros" }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tracing = "0.1"
 

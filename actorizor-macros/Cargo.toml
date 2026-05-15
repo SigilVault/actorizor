@@ -1,6 +1,6 @@
 [package]
 name = "actorizor-macros"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Proc-macro implementation for the actorizor crate. Don't depend on this directly — depend on `actorizor` instead."
 repository = "https://github.com/SigilVault/actorizor"
