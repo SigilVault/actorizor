@@ -1,10 +1,9 @@
 # actorizor — contributor guide
 
-This workspace contains three crates:
+This workspace contains two crates:
 
-- **`actorizor`** — the user-facing library. Re-exports the `actorize` macro and exposes the `Supervisor` trait, `TokioSpawn`, and (behind the `tracking` feature) `TrackingSupervisor`. **This is what users depend on.**
+- **`actorizor`** — the user-facing library. Re-exports the `actorize` macro and exposes the `Supervisor` trait, `TokioSpawn`, and (behind the `tracking` feature) `TrackingSupervisor`. **This is what users depend on.** Integration tests live in `actorizor/tests/`; the runnable demo lives in `actorizor/examples/`.
 - **`actorizor-macros`** — the proc-macro implementation. Users do not depend on it directly; it's a private peer of `actorizor`. Split out because proc-macro crates cannot export non-macro items, but the macro's generated code needs to reference `actorizor::Supervisor` and `actorizor::TokioSpawn`.
-- **`actor_macro_app`** — integration test suite + the canonical supervisor example.
 
 The crates are versioned in lockstep with a `=` pin on `actorizor-macros`.
 
@@ -93,17 +92,31 @@ Forwarded from `actorizor` → `actorizor-macros`. Emits a `eprintln!` of the pr
 - `pub(super)` and similar restricted visibility are currently passed through but not semantically restricted in generated code (TODO in `extract_functions_raw`).
 - **One actor per module.** The macro emits `run_actor` as a module-scoped free function with a fixed name, so two `#[actorize]` blocks in the same module will collide. Wrap each actor in its own `mod { ... }`. This is the convention the test suite follows.
 
-## Running tests
+## Test + example layout
+
+Integration tests are in `actorizor/tests/`, one concern per file. Each
+`tests/*.rs` is its own crate root, so the "one actor per module" rule only
+bites for multiple actors *within one file* — those go in submodules.
+
+| File | Covers |
+|---|---|
+| `basic.rs` | constructors, sync/async methods, multi-arg, clone-shares-state |
+| `lifecycle.rs` | `abort()`, `shutdown()`, `is_alive()` / `is_finished()` |
+| `supervision.rs` | `launch_with` + `TokioSpawn` + a custom `Supervisor` impl |
+| `tracking.rs` | `TrackingSupervisor` (whole file `#![cfg(feature = "tracking")]`) |
+| `complex_impl.rs` | gnarly impl block: qdepth, many ctors, private fns, non-method assoc fns |
 
 ```
 # Default features:
-cargo test -p actor_macro_app
+cargo test -p actorizor
 
 # Everything including TrackingSupervisor:
-cargo test -p actor_macro_app --features tracking
+cargo test -p actorizor --features tracking
 
-# The runnable supervisor demo:
+# The runnable supervisor demo (also rendered on docs.rs):
 cargo run --example supervisor --features tracking
 ```
 
-The `actor_macro_app` crate is the integration test suite — all meaningful tests live there. The `examples/supervisor.rs` file is the canonical "this is what your supervisor wiring should look like" reference.
+`actorizor/examples/supervisor.rs` is the canonical "this is what your
+supervisor wiring should look like" reference. Living in the lib crate, it
+shows up on docs.rs.

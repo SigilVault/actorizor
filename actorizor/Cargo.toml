@@ -27,3 +27,8 @@ tracking = []
 # Forwards to actorizor-macros — emits the pretty-printed macro expansion at
 # compile time for debugging. Not user-facing.
 diagout = ["actorizor-macros/diagout"]
+
+# The supervisor example exercises TrackingSupervisor + tracing output.
+[[example]]
+name = "supervisor"
+required-features = ["tracking"]
