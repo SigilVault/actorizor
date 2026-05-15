@@ -696,13 +696,11 @@ fn extract_base_ident(item: &ItemImpl) -> Ident {
             .last()
             .map(|seg| seg.ident.clone())
             .unwrap_or_else(|| format_ident!("NO_IDENT")),
-        other => {
-            // e.g. `impl (Foo, Bar)` — not a named type; fall back to the
-            // token stream so the (already-bad) input still produces a
-            // diagnostic rather than a panic.
-            let ts = other.to_token_stream();
-            parse_quote!(#ts)
-        }
+        // Unreachable for valid input: `validate_generics` rejects any
+        // non-`Type::Path` self type up front with a proper `syn::Error`.
+        // Return a placeholder rather than `parse_quote!` (which would
+        // panic) so this stays infallible and non-panicking regardless.
+        _ => format_ident!("NO_IDENT"),
     }
 }
 
@@ -863,6 +861,16 @@ impl ActorGenerics {
 ///   cannot carry a generic that isn't a parameter of the enum; supporting
 ///   this would require per-message type erasure. Out of scope.
 fn validate_generics(ast: &ItemImpl) -> syn::Result<()> {
+    // The self type must be a named type — `MyActor` or `MyActor<T>`. The
+    // generated type names are derived from its leading path segment;
+    // tuples / refs / arrays etc. have no such name.
+    if !matches!(&*ast.self_ty, Type::Path(_)) {
+        return Err(syn::Error::new_spanned(
+            &ast.self_ty,
+            "actorize: the impl self type must be a named type \
+             (e.g. `MyActor` or `MyActor<T>`)",
+        ));
+    }
     for p in &ast.generics.params {
         if let GenericParam::Lifetime(lp) = p {
             return Err(syn::Error::new_spanned(

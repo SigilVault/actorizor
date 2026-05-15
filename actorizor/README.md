@@ -149,7 +149,7 @@ impl is hand-written, not derived). What's *not* supported, rejected at
 compile time with a clear error:
 
 - **Generic methods** — `pub fn foo<U>(&self, x: U)`. Move the parameter
-  to the impl, or monomorphise at the call site.
+  to the impl, or monomorphize at the call site.
 - **Lifetime parameters** — `impl<'a> MyActor<'a>`. An actor task is
   spawned and must be `'static` (the actor may still hold `'static`
   references internally).

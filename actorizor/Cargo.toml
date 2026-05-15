@@ -2,6 +2,10 @@
 name = "actorizor"
 version = "0.2.1"
 edition = "2024"
+# Let-chains in the generics plumbing require Rust 1.88 (edition 2024
+# alone only implies 1.85). Declared so cargo errors clearly on older
+# toolchains instead of failing with a cryptic syntax error.
+rust-version = "1.88"
 description = "Simple macro based actor framework for Tokio-based apps"
 repository = "https://github.com/SigilVault/actorizor"
 license = "Apache-2.0"
