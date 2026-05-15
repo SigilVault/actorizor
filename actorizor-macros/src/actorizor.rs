@@ -27,6 +27,21 @@ struct AttrArgs {
     qdepth: Option<usize>,
 }
 
+/// Parse a `LitInt` as the mailbox depth and reject `0` at expansion time.
+/// `tokio::sync::mpsc::channel(0)` panics at runtime (the minimum bounded
+/// capacity is 1), so catching it here turns a launch-time panic into a
+/// clear compile error pointing at the literal.
+fn parse_qdepth(lit: &LitInt) -> syn::Result<usize> {
+    let v: usize = lit.base10_parse()?;
+    if v == 0 {
+        return Err(syn::Error::new(
+            lit.span(),
+            "actorize queue depth must be at least 1 (tokio::sync::mpsc::channel(0) panics)",
+        ));
+    }
+    Ok(v)
+}
+
 impl Parse for AttrArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut qdepth = None;
@@ -34,14 +49,14 @@ impl Parse for AttrArgs {
         while !input.is_empty() {
             if input.peek(LitInt) {
                 let lit: LitInt = input.parse()?;
-                qdepth = Some(lit.base10_parse()?);
+                qdepth = Some(parse_qdepth(&lit)?);
             } else if input.peek(Ident) {
                 let ident: Ident = input.parse()?;
                 let _: Token![=] = input.parse()?;
                 match ident.to_string().as_str() {
                     "qdepth" => {
                         let lit: LitInt = input.parse()?;
-                        qdepth = Some(lit.base10_parse()?);
+                        qdepth = Some(parse_qdepth(&lit)?);
                     }
                     other => {
                         return Err(syn::Error::new(
@@ -321,8 +336,10 @@ impl Root {
                 /// uses it for `is_alive` / `is_finished` queries too.
                 abort: ::actorizor::__private::tokio::task::AbortHandle,
                 /// Shared cooperative-shutdown signal. `shutdown()` calls
-                /// `notify_waiters()`; `run_actor`'s biased `select!` exits
-                /// on `notified()`.
+                /// `notify_one()` (sticky permit — survives until consumed,
+                /// so a shutdown raced while `run_actor` is inside
+                /// `handle_msg` is not lost); `run_actor`'s biased
+                /// `select!` exits on the next `notified()`.
                 shutdown: ::std::sync::Arc<::actorizor::__private::tokio::sync::Notify>,
             }
 
@@ -361,13 +378,16 @@ impl Root {
                     self.abort.abort();
                 }
 
-                /// Cooperatively signal the actor to stop. Wakes the
-                /// biased select! in `run_actor`; the loop exits without
-                /// dropping the current Sender clones, so this handle's
-                /// methods will still appear to send successfully but
-                /// recv() will fail once the actor has exited.
+                /// Cooperatively signal the actor to stop. Uses
+                /// `notify_one()` so the signal is a sticky permit: if
+                /// `run_actor` is mid-`handle_msg` (not currently awaiting
+                /// `notified()`) when this is called, the permit persists
+                /// and the next loop iteration's `notified()` consumes it
+                /// immediately. The loop exits without dropping the Sender
+                /// clones, so this handle's methods still send successfully
+                /// but `recv()` fails once the actor has exited.
                 pub fn shutdown(&self) {
-                    self.shutdown.notify_waiters();
+                    self.shutdown.notify_one();
                 }
 
                 /// Returns `true` if the actor task is still running.
@@ -605,16 +625,26 @@ pub fn actorize(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let ast = syn::parse::<ItemImpl>(item).expect("unable to get ast");
+    // Surface parse failures as a `compile_error!` at the offending span
+    // (a panic in a proc-macro produces a far worse "proc-macro panicked"
+    // diagnostic with no source location).
+    match actorize_inner(attr.into(), item.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn actorize_inner(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let ast = syn::parse2::<ItemImpl>(item)?;
     let mut root = Root::from(ast);
 
-    let attr_ts2: proc_macro2::TokenStream = attr.into();
-    let args: AttrArgs = if attr_ts2.is_empty() {
+    let args: AttrArgs = if attr.is_empty() {
         AttrArgs { qdepth: None }
     } else {
-        syn::parse2(attr_ts2).unwrap_or_else(|e| {
-            panic!("#[actorize] attribute parse error: {e}")
-        })
+        syn::parse2(attr)?
     };
 
     if let Some(q) = args.qdepth {
@@ -642,5 +672,5 @@ pub fn actorize(
             .unwrap_or("Error during pretty print".to_owned())
     );
 
-    implementation.into()
+    Ok(implementation)
 }

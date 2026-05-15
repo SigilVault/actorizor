@@ -5,8 +5,12 @@
 
 #![cfg(feature = "tracking")]
 
+mod common;
+
 mod registry {
     use actorizor::{TrackingSupervisor, actorize};
+
+    use crate::common::{SETTLE, wait_until};
 
     #[derive(Debug, Default)]
     struct Worker {
@@ -51,13 +55,11 @@ mod registry {
         let killed = sup.abort_by_name("Worker");
         assert_eq!(killed, 2);
 
-        for _ in 0..50 {
-            if sup.alive_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert_eq!(sup.alive_count(), 0, "abort + watcher should clean up");
+        assert!(
+            wait_until(|| sup.alive_count() == 0, SETTLE).await,
+            "abort + watcher should clean up"
+        );
+        assert_eq!(sup.alive_count(), 0);
     }
 
     #[tokio::test]
@@ -74,12 +76,10 @@ mod registry {
 
         assert!(sup.abort_by_id("Worker", target_id));
 
-        for _ in 0..50 {
-            if sup.alive_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        assert!(
+            wait_until(|| sup.alive_count() == 1, SETTLE).await,
+            "expected 1 alive"
+        );
         assert_eq!(sup.alive_count(), 1);
         assert!(!sup.is_alive("Worker", target_id));
     }
@@ -95,18 +95,18 @@ mod registry {
 
         assert_eq!(sup.abort_all(), 2);
 
-        for _ in 0..50 {
-            if sup.alive_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        assert!(
+            wait_until(|| sup.alive_count() == 0, SETTLE).await,
+            "expected 0 alive"
+        );
         assert_eq!(sup.alive_count(), 0);
     }
 }
 
 mod panic_cleanup {
     use actorizor::{TrackingSupervisor, actorize};
+
+    use crate::common::{SETTLE, wait_until};
 
     #[derive(Debug, Default)]
     struct Panics;
@@ -131,16 +131,10 @@ mod panic_cleanup {
         // dropped) — expected, discard it.
         let _ = h.boom().await;
 
-        for _ in 0..50 {
-            if sup.alive_count() == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert_eq!(
-            sup.alive_count(),
-            0,
+        assert!(
+            wait_until(|| sup.alive_count() == 0, SETTLE).await,
             "watcher should remove the panicked actor from the registry"
         );
+        assert_eq!(sup.alive_count(), 0);
     }
 }

@@ -97,11 +97,25 @@ mod tracking {
         pub name: &'static str,
         pub id: u64,
         pub spawned_at: Instant,
-        /// `true` if the task's `AbortHandle` reports unfinished. Note:
-        /// `snapshot()` removes already-exited entries, so this is
-        /// effectively always `true` for snapshot results, but the field is
-        /// kept for callers that hold snapshots over time.
+        /// `true` if the task's `AbortHandle` reports unfinished. Every
+        /// query (including `snapshot`) prunes finished entries before
+        /// answering, so this is effectively always `true` in fresh
+        /// snapshot results — the field is kept for callers that hold a
+        /// snapshot over time and want to recheck without going back to the
+        /// supervisor.
         pub alive: bool,
+    }
+
+    /// Drop every entry whose task has finished, and any name whose list
+    /// is now empty. Called under the actors lock before any liveness
+    /// query so results never report a finished-but-not-yet-watcher-pruned
+    /// task as alive (the per-spawn watcher also prunes, but it may not
+    /// have been scheduled yet).
+    fn prune_locked(map: &mut HashMap<&'static str, Vec<Tracked>>) {
+        map.retain(|_, v| {
+            v.retain(|t| !t.abort.is_finished());
+            !v.is_empty()
+        });
     }
 
     impl TrackingSupervisor {
@@ -114,44 +128,40 @@ mod tracking {
             }
         }
 
-        /// Total number of currently-tracked alive actors across all names.
+        /// Total number of currently-alive actors across all names.
+        /// Finished tasks are pruned before counting.
         pub fn alive_count(&self) -> usize {
-            self.inner
-                .actors
-                .lock()
-                .unwrap()
-                .values()
-                .map(|v| v.len())
-                .sum()
+            let mut guard = self.inner.actors.lock().unwrap();
+            prune_locked(&mut guard);
+            guard.values().map(|v| v.len()).sum()
         }
 
-        /// Number of currently-tracked alive actors with the given name.
+        /// Number of currently-alive actors with the given name.
+        /// Finished tasks are pruned before counting.
         pub fn alive_count_by_name(&self, name: &str) -> usize {
-            self.inner
-                .actors
-                .lock()
-                .unwrap()
-                .get(name)
-                .map(|v| v.len())
-                .unwrap_or(0)
+            let mut guard = self.inner.actors.lock().unwrap();
+            prune_locked(&mut guard);
+            guard.get(name).map(|v| v.len()).unwrap_or(0)
         }
 
-        /// Whether an actor with the given (name, id) is still in the
-        /// registry. Returns `false` if it's exited (and been pruned) or
-        /// never existed.
+        /// Whether an actor with the given (name, id) is still alive.
+        /// Finished tasks are pruned first, so a task that has completed
+        /// but whose watcher hasn't run yet correctly reports `false`.
         pub fn is_alive(&self, name: &str, id: u64) -> bool {
-            self.inner
-                .actors
-                .lock()
-                .unwrap()
+            let mut guard = self.inner.actors.lock().unwrap();
+            prune_locked(&mut guard);
+            guard
                 .get(name)
                 .map(|v| v.iter().any(|t| t.id == id))
                 .unwrap_or(false)
         }
 
-        /// Snapshot of every tracked alive actor.
+        /// Snapshot of every currently-alive actor. Finished tasks are
+        /// pruned before the snapshot is built, so every returned entry was
+        /// alive at the moment of the call.
         pub fn snapshot(&self) -> Vec<ActorSnapshot> {
-            let guard = self.inner.actors.lock().unwrap();
+            let mut guard = self.inner.actors.lock().unwrap();
+            prune_locked(&mut guard);
             let mut out = Vec::new();
             for (name, instances) in guard.iter() {
                 for t in instances {
@@ -213,15 +223,6 @@ mod tracking {
             n
         }
 
-        fn remove(&self, name: &'static str, id: u64) {
-            let mut guard = self.inner.actors.lock().unwrap();
-            if let Some(v) = guard.get_mut(name) {
-                v.retain(|t| t.id != id);
-                if v.is_empty() {
-                    guard.remove(name);
-                }
-            }
-        }
     }
 
     impl Default for TrackingSupervisor {
@@ -267,27 +268,14 @@ mod tracking {
                         tracing::warn!(actor = name, id, "actor task join error: {e}");
                     }
                 }
+                // Reuse the same prune the queries use — drops this
+                // just-finished task (and any other finished ones) and
+                // empties dead name buckets.
                 let mut guard = inner.actors.lock().unwrap();
-                if let Some(v) = guard.get_mut(name) {
-                    v.retain(|t| t.id != id);
-                    if v.is_empty() {
-                        guard.remove(name);
-                    }
-                }
+                prune_locked(&mut guard);
             });
 
             abort
-        }
-    }
-
-    // Silence the unused-method warning when nothing in the feature gate
-    // calls `remove` directly — the in-watcher cleanup uses the inlined
-    // version. Kept as an associated fn for future internal callers (e.g.
-    // explicit "deregister this one" before abort completes).
-    #[allow(dead_code)]
-    impl TrackingSupervisor {
-        fn _ensure_remove_used(&self, name: &'static str, id: u64) {
-            self.remove(name, id);
         }
     }
 }
