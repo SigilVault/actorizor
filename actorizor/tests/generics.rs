@@ -257,3 +257,95 @@ mod with_supervisor {
         );
     }
 }
+
+// --- T as custom struct / reference / Box / Arc ----------------------
+//
+// The only bound on `T` is `Send + 'static`. That admits owned custom
+// structs, `&'static` references, `Box<_>`, and `Arc<_>`. `Rc<_>` is
+// deliberately NOT tested: it is `!Send`, so `Holder<Rc<Payload>>` fails
+// to compile (the actor task is spawned) — that rejection is by design,
+// and asserting a compile-failure would need `trybuild` (out of scope).
+mod payload_shapes {
+    use std::sync::Arc;
+
+    use actorizor::actorize;
+
+    // Non-primitive, non-Clone, non-Copy.
+    #[derive(Debug, PartialEq)]
+    pub struct Payload {
+        pub id: u64,
+        pub label: String,
+    }
+
+    #[derive(Debug, Default)]
+    struct Holder<T> {
+        items: Vec<T>,
+    }
+
+    #[actorize]
+    impl<T: Send + 'static> Holder<T> {
+        pub fn new() -> Self {
+            Self { items: Vec::new() }
+        }
+
+        pub fn put(&mut self, item: T) -> usize {
+            self.items.push(item);
+            self.items.len()
+        }
+
+        pub fn count(&self) -> usize {
+            self.items.len()
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_struct_payload() {
+        let h = HolderHandle::<Payload>::new();
+        assert_eq!(
+            h.put(Payload {
+                id: 1,
+                label: "a".into()
+            })
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(h.count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn static_reference_payload() {
+        let h = HolderHandle::<&'static str>::new();
+        h.put("x").await.unwrap();
+        h.put("y").await.unwrap();
+        assert_eq!(h.count().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn boxed_payload() {
+        let h = HolderHandle::<Box<Payload>>::new();
+        h.put(Box::new(Payload {
+            id: 2,
+            label: "boxed".into(),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(h.count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn arc_payload_is_shared_handle_still_clone() {
+        let h = HolderHandle::<Arc<Payload>>::new();
+        // The handle is Clone even though Arc<Payload> isn't the actor's
+        // generic-bound concern — and Arc lets the same value be pushed
+        // twice without cloning Payload itself.
+        let h2 = h.clone();
+        let p = Arc::new(Payload {
+            id: 3,
+            label: "shared".into(),
+        });
+        h.put(Arc::clone(&p)).await.unwrap();
+        h2.put(p).await.unwrap();
+        assert_eq!(h.count().await.unwrap(), 2);
+    }
+}

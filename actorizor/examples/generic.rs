@@ -86,6 +86,17 @@ mod scale {
 #[allow(dead_code)]
 struct Ticket(u64);
 
+/// A non-primitive custom struct used as `T`. Not `Clone`, not `Copy` —
+/// works fine as a payload, and `StoreHandle<Parcel>` is still `Clone`.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct Parcel {
+    id: u64,
+    label: String,
+}
+
+use std::sync::Arc;
+
 use scale::ScaleHandle;
 use store::StoreHandle;
 
@@ -113,6 +124,46 @@ async fn main() {
     println!(
         "Store<Ticket> shared across two handle clones: len={}",
         tickets.len().await.unwrap()
+    );
+
+    // --- T as a custom struct, a reference, a Box, and an Arc ---------
+    //
+    // The only hard requirement on `T` is `Send + 'static` (the actor task
+    // is spawned). That admits owned structs, `&'static` references,
+    // `Box<_>`, and `Arc<_>`. It does NOT admit `Rc<_>` — `Rc` is `!Send`,
+    // so `StoreHandle::<Rc<Parcel>>::new()` would fail to compile with
+    // "`Rc<Parcel>` cannot be sent between threads safely". Use `Arc`.
+
+    // Custom struct, owned.
+    let parcels = StoreHandle::<Parcel>::new();
+    parcels
+        .push(Parcel { id: 1, label: "books".into() })
+        .await
+        .unwrap();
+    println!("Store<Parcel>.len = {}", parcels.len().await.unwrap());
+
+    // &'static str — a reference type (Send + 'static because 'static).
+    let refs = StoreHandle::<&'static str>::new();
+    refs.push("alpha").await.unwrap();
+    refs.push("beta").await.unwrap();
+    println!("Store<&'static str>.len = {}", refs.len().await.unwrap());
+
+    // Box<Parcel>.
+    let boxed = StoreHandle::<Box<Parcel>>::new();
+    boxed
+        .push(Box::new(Parcel { id: 2, label: "boxed".into() }))
+        .await
+        .unwrap();
+    println!("Store<Box<Parcel>>.len = {}", boxed.len().await.unwrap());
+
+    // Arc<Parcel> — shared, and the handle is still cheaply cloneable.
+    let shared = Arc::new(Parcel { id: 3, label: "shared".into() });
+    let arced = StoreHandle::<Arc<Parcel>>::new();
+    arced.push(Arc::clone(&shared)).await.unwrap();
+    arced.push(shared).await.unwrap();
+    println!(
+        "Store<Arc<Parcel>>.len = {} (same Parcel pushed twice)",
+        arced.len().await.unwrap()
     );
 
     // where-clause generic.
